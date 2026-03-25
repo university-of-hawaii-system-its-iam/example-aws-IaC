@@ -5,7 +5,7 @@ This checklist guides you through deploying log rotation in your production envi
 ## Pre-Deployment Planning
 
 - [ ] Review `IMPLEMENTATION_SUMMARY.md` for architecture overview
-- [ ] Review `docs/LOG_ROTATION.md` for detailed configuration options
+- [ ] Review `LOG_ROTATION.md` for detailed configuration options
 - [ ] Determine your log retention policy (default: 30 days on EFS, 7 years in S3)
 - [ ] Estimate disk space needs (100MB/day per service = ~3GB/month)
 - [ ] Plan S3 bucket naming (must be globally unique)
@@ -40,12 +40,6 @@ This checklist guides you through deploying log rotation in your production envi
   ENTRYPOINT ["/app/entrypoint.sh"]
   ```
 
-- [ ] Update `application.properties` (optional):
-  ```properties
-  logging.config=classpath:logback-spring.xml
-  logging.file.name=/var/log/application/api/application.log
-  ```
-
 - [ ] Build and test Docker image locally:
   ```bash
   docker build -t uh-groupings-api:test .
@@ -63,8 +57,6 @@ This checklist guides you through deploying log rotation in your production envi
   - [ ] `services/ui/logback-spring.xml` → `src/main/resources/`
 
 - [ ] Update `Dockerfile` (same as API, but with `logrotate-ui.conf`)
-
-- [ ] Update `application.properties` (optional)
 
 - [ ] Build and test locally
 
@@ -459,8 +451,7 @@ If issues occur, you can rollback:
 ## Support Resources
 
 - **General Questions:** See `IMPLEMENTATION_SUMMARY.md`
-- **Configuration Details:** See `docs/LOG_ROTATION.md`
+- **Configuration Details:** See `LOG_ROTATION.md`
 - **Quick Start:** See `README_LOG_ROTATION.md`
 - **AWS Docs:** https://docs.aws.amazon.com/AmazonECS/latest/developerguide/using_cloudwatch_logs.html
-
 

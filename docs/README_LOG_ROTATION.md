@@ -1,27 +1,27 @@
-# Log Rotation Configuration Examples
+# Log Rotation Configuration - Quick Start
 
-This directory contains example configuration files for implementing log rotation in the UI and API services.
+This directory contains reference documentation and configuration for implementing log rotation in the UI and API services.
 
 ## Files Provided
 
 ### 1. **Dockerfiles** (Updated)
-- `/services/api/Dockerfile` - Updated with logrotate installation and configuration
-- `/services/ui/Dockerfile` - Updated with logrotate installation and configuration
+- `services/api/Dockerfile` - Updated with logrotate installation and configuration
+- `services/ui/Dockerfile` - Updated with logrotate installation and configuration
 
 ### 2. **Entrypoint Scripts**
-- `/services/api/entrypoint.sh` - API service startup with log rotation scheduling
-- `/services/ui/entrypoint.sh` - UI service startup with log rotation scheduling
+- `services/api/entrypoint.sh` - API service startup with log rotation scheduling
+- `services/ui/entrypoint.sh` - UI service startup with log rotation scheduling
 
 ### 3. **Logrotate Configuration**
-- `/services/api/logrotate-api.conf` - Rotation rules for API logs
-- `/services/ui/logrotate-ui.conf` - Rotation rules for UI logs
+- `services/api/logrotate-api.conf` - Rotation rules for API logs
+- `services/ui/logrotate-ui.conf` - Rotation rules for UI logs
 
 ### 4. **Spring Boot Logback Configuration** (Optional)
-- `/services/api/logback-spring.xml` - Spring Boot native log rotation for API
-- `/services/ui/logback-spring.xml` - Spring Boot native log rotation for UI
+- `services/api/logback-spring.xml` - Spring Boot native log rotation for API
+- `services/ui/logback-spring.xml` - Spring Boot native log rotation for UI
 
 ### 5. **Infrastructure as Code**
-- `/infra/lib/log-archival-stack.ts` - AWS CDK stack for CloudWatch log exports to S3
+- `infra/lib/log-archival-stack.ts` - AWS CDK stack for CloudWatch log exports to S3
 
 ## Quick Start
 
@@ -201,6 +201,15 @@ In logback-spring.xml:
 - Reduce `maxage` value
 - Check for uncompressed files taking up space
 - Monitor with: `du -sh /var/log/application/* /logs/Archive/`
+
+## Documentation
+
+For more detailed information, see:
+- `docs/LOG_ROTATION.md` - Comprehensive configuration guide
+- `docs/IMPLEMENTATION_SUMMARY.md` - How-it-works guide
+- `docs/DEPLOYMENT_CHECKLIST.md` - Step-by-step deployment
+- `docs/QUICK_REFERENCE.md` - Quick lookup and troubleshooting
+- `docs/ARCHITECTURE_DIAGRAMS.md` - Visual architecture
 
 ## References
 
