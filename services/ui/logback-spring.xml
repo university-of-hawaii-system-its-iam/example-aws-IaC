@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Spring Boot Logback configuration with log rotation to Archive directory -->
+
+    <!-- Properties for log configuration -->
+    <property name="LOG_DIR" value="/var/log/application/ui"/>
+    <property name="LOG_ARCHIVE_DIR" value="/logs/Archive"/>
+    <property name="LOG_FILE_MAX_SIZE" value="100MB"/>
+    <property name="LOG_FILE_MAX_HISTORY" value="7"/>
+    <property name="LOG_TOTAL_SIZE_CAP" value="1GB"/>
+
+    <!-- Console appender for stdout -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Rolling file appender with rotation to archive -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/application.log</file>
+
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+
+        <!-- Rolling policy: rotate by size and time -->
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <!-- Archive file name pattern: /logs/Archive/application-20260324.1.log.gz -->
+            <fileNamePattern>${LOG_ARCHIVE_DIR}/application-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+
+            <!-- Rotate when file exceeds 100MB -->
+            <maxFileSize>${LOG_FILE_MAX_SIZE}</maxFileSize>
+
+            <!-- Keep 7 days of rotated logs -->
+            <maxHistory>${LOG_FILE_MAX_HISTORY}</maxHistory>
+
+            <!-- Total size cap of 1GB across all archives -->
+            <totalSizeCap>${LOG_TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- Async appender for better performance -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE"/>
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+    </appender>
+
+    <!-- Spring Boot profiles -->
+    <springProfile name="dev">
+        <logger name="com.uh.groupings" level="DEBUG"/>
+    </springProfile>
+
+    <springProfile name="prod">
+        <logger name="com.uh.groupings" level="INFO"/>
+    </springProfile>
+
+    <!-- Root logger configuration -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="ASYNC_FILE"/>
+    </root>
+</configuration>
+

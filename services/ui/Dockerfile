@@ -21,11 +21,11 @@ RUN apk add --no-cache logrotate
 COPY --from=builder /app/target/*.jar app.jar
 
 # Create log and archive directories with proper permissions
-RUN mkdir -p /var/log/application/api /logs/Archive && \
-    chmod 755 /var/log/application/api /logs/Archive
+RUN mkdir -p /var/log/application/ui /logs/Archive && \
+    chmod 755 /var/log/application/ui /logs/Archive
 
 # Copy logrotate configuration
-COPY logrotate-api.conf /etc/logrotate.d/api
+COPY logrotate-ui.conf /etc/logrotate.d/ui
 
 # Copy logback configuration (optional, for Spring Boot log rotation)
 COPY logback-spring.xml /app/logback-spring.xml
@@ -35,11 +35,11 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Expose port
-EXPOSE 8080
+EXPOSE 3000
 
 # Health check (Spring Boot actuator endpoint)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD wget --quiet --tries=1 --spider http://localhost:8080/actuator/health || exit 1
+  CMD wget --quiet --tries=1 --spider http://localhost:3000/actuator/health || exit 1
 
 # Start the application with log rotation
 ENTRYPOINT ["/app/entrypoint.sh"]
