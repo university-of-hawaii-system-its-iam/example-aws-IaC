@@ -1,8 +1,9 @@
 
 # Overview
 
-Prepare an example, hypothetical AWS Infrastructure as Code (IaC) project for a 
-containerized application running on Amazon Elastic Container Service (ECS).
+As a learning exercise, prepare an example, hypothetical AWS Infrastructure as 
+Code (IaC) project for a containerized application running on Amazon Elastic 
+Container Service (ECS).
 
 ![img.png](img.png)
 
@@ -16,7 +17,7 @@ containerized application running on Amazon Elastic Container Service (ECS).
 - Amazon Elastic Container Registry
 - Amazon Elastic Container Service
 
-![img_1.png](img_1.png)
+![img_1.png](resources/img_1.png)
 
 ## Amazon ECS provides the following features
 
