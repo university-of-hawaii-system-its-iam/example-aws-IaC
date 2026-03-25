@@ -5,7 +5,7 @@ As a learning exercise, prepare an example, hypothetical AWS Infrastructure as
 Code (IaC) project for a containerized application running on Amazon Elastic 
 Container Service (ECS).
 
-![img.png](img.png)
+![img.png](resources/img.png)
 
 # Tech stack
 
