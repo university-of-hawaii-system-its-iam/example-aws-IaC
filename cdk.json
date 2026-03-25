@@ -1,0 +1,28 @@
+{
+  "app": "npx ts-node bin/app.ts",
+  "watch": {
+    "include": [
+      "**"
+    ],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "package*.json",
+      "tsconfig.json",
+      "node_modules",
+      "cdk.out",
+      "dist"
+    ]
+  },
+  "context": {
+    "@aws-cdk/core:enableStackNameDuplicates": true,
+    "@aws-cdk/aws-apigateway:usagePlanKeyOrderInsensitiveId": true,
+    "@aws-cdk/core:stackRelativeExports": true,
+    "@aws-cdk/aws-rds:lowercaseDbIdentifier": true,
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/aws-cloudfront:defaultSecurityPolicyTLSv1.2_2021_06": true,
+    "@aws-cdk/aws-apigateway:disableCloudWatchRole": false,
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}
+
