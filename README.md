@@ -17,7 +17,11 @@
 
 # Overview
 
-This is an AWS Infrastructure as Code (IaC) project demonstrating a **multi-repository, team-based architecture** for deploying containerized applications to Amazon ECS.
+This is an AWS Infrastructure as Code (IaC) project demonstrating a 
+**multi-repository, team-based architecture** for deploying containerized 
+applications to Amazon ECS.
+
+UH Groupings will be used for this demonstration.
 
 Key principles:
 - **Infrastructure** is centralized in this repository (AWS CDK)
