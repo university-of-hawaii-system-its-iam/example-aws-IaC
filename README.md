@@ -73,9 +73,10 @@ GitHub Organization: uhawaii-system-its-ti-iam
 - Service dependencies or tests
 
 ### Key Files:
-- `infra/lib/network-stack.ts` - VPC, subnets, networking
-- `infra/lib/app-stack.ts` - ECS cluster, services, ALB (references external images)
-- `infra/lib/data-stack.ts` - RDS, ElastiCache, S3, Secrets Manager
+- `infra/stacks/network_stack.py` - VPC, subnets, networking
+- `infra/stacks/app_stack.py` - ECS cluster, services, ALB (references external images)
+- `infra/stacks/data_stack.py` - RDS, ElastiCache, S3, Secrets Manager
+- `infra/stacks/log_archival_stack.py` - S3, CloudWatch, Lambda for log archival
 - `.github/workflows/deploy-dev.yml` - Development deployment workflow
 - `.github/workflows/deploy-prod.yml` - Production deployment workflow
 
@@ -118,19 +119,19 @@ This project supports **two deployment environments**:
 ```
 API Development Team                UI Development Team
          │                                    │
-         ├─ Commit to release-prod          ├─ Commit to release-prod
+         ├─ Commit to release-prod            ├─ Commit to release-prod
          │                                    │
          ▼                                    ▼
   GitHub Actions Workflow            GitHub Actions Workflow
   (uh-groupings-api)                 (uh-groupings-ui)
   [AUTOMATICALLY TRIGGERED]          [AUTOMATICALLY TRIGGERED]
          │                                    │
-         ├─ Build Docker image               ├─ Build Docker image
-         ├─ Test image                       ├─ Test image
-         └─ Push to AWS ECR                  └─ Push to AWS ECR
-             (api:release-prod)                  (ui:release-prod)
+         ├─ Build Docker image                ├─ Build Docker image
+         ├─ Test image                        ├─ Test image
+         ├─ Push to AWS ECR                   ├─ Push to AWS ECR
+         │    (api:release-prod)              │    (ui:release-prod)
          │                                    │
-         └────────────┬─────────────────────┘
+         └────────────┬───────────────────────┘
                       │
                       ▼
               AWS ECR (Private Registry)
@@ -138,46 +139,45 @@ API Development Team                UI Development Team
         ┌─────────────┴─────────────┐
         │                           │
         ▼                           ▼
-
 ╔════════════════════════════╗   ╔════════════════════════════╗
 ║   TEST ENVIRONMENT         ║   ║  PRODUCTION ENVIRONMENT    ║
 ║  [AUTOMATIC DEPLOYMENT]    ║   ║  [MANUAL DEPLOYMENT]       ║
 ╚════════════════════════════╝   ╚════════════════════════════╝
         │                           │
-        │              Infrastructure Team
-        │              (example-aws-iac)
+        │                    Infrastructure Team
+        │                      (example-aws-iac)
         │                           │
-        │              ├─ Update app-stack.ts
-        │              ├─ Commit to main
+        │                           ├─ Update app-stack.ts
+        │                           ├─ Commit to main
         │                           │
-        ▼              ▼
-   GitHub Actions    GitHub Actions
-   (deploy-dev.yml)  (deploy-prod.yml)
-   [AUTO-TRIGGERED]  [MANUAL TRIGGER]
+        ▼                           ▼
+   GitHub Actions              GitHub Actions
+   (deploy-dev.yml)            (deploy-prod.yml)
+   [AUTO-TRIGGERED]            [MANUAL TRIGGER]
         │                           │
-   ├─ CDK Synth        Infrastructure team must:
-   ├─ Deploy to Test   1. Review changes
-        │              2. Manually trigger
-        ▼              3. Approve deployment
-   AWS ECS                         │
-   (Test Cluster)                  ▼
-        │              ┌──────────────────┐
-   ├─ Test API        │ CDK Synth        │
-   ├─ Test UI         │ (Production)     │
-   └─ Test ALB        └──────────────────┘
-                               │
-                               ▼
-                      ┌──────────────────┐
-                      │ CDK Deploy       │
-                      │ (Production)     │
-                      └──────────────────┘
-                               │
-                               ▼
-                      AWS ECS (Prod Cluster)
-                               │
-                        ├─ Prod API
-                        ├─ Prod UI
-                        └─ Prod ALB
+        ├─ CDK Synth        Infrastructure team must:
+        ├─ Deploy to Test   1. Review changes
+        │                   2. Manually trigger
+        ▼                   3. Approve deployment
+   AWS ECS                          │
+   (Test Cluster)                   ▼
+        │                   ┌──────────────────┐
+        ├─ Test API         │ CDK Synth        │
+        ├─ Test UI          │ (Production)     │
+        └─ Test ALB         └──────────────────┘
+                                    │
+                                    ▼
+                            ┌──────────────────┐
+                            │ CDK Deploy       │
+                            │ (Production)     │
+                            └──────────────────┘
+                                    │
+                                    ▼
+                            AWS ECS (Prod Cluster)
+                                    │
+                                    ├─ Prod API
+                                    ├─ Prod UI
+                                    └─ Prod ALB
 ```
 
 ### Deployment Strategy
@@ -212,21 +212,21 @@ example-aws-iac/
 │       ├── deploy-dev.yml      # Deploy infrastructure to development
 │       └── deploy-prod.yml     # Deploy infrastructure to production
 │
-├── infra/                       # AWS CDK Infrastructure Code
-│   ├── bin/
-│   │   └── app.ts              # CDK app entry point
+├── infra/                       # AWS CDK Infrastructure Code (Python)
+│   ├── app.py                   # CDK app entry point
 │   │
-│   ├── lib/
-│   │   ├── network-stack.ts     # Network infrastructure
-│   │   ├── app-stack.ts         # ECS, Services, ALB
+│   ├── stacks/
+│   │   ├── network_stack.py     # Network infrastructure
+│   │   ├── app_stack.py         # ECS, Services, ALB
 │   │   │                        # References:
 │   │   │                        # - ECR image: uh-groupings-api:release-prod
 │   │   │                        # - ECR image: uh-groupings-ui:release-prod
-│   │   └── data-stack.ts        # RDS, caching, secrets
+│   │   ├── data_stack.py        # RDS, caching, secrets
+│   │   └── log_archival_stack.py # S3, CloudWatch, Lambda for log archival
 │   │
 │   ├── cdk.json                 # CDK configuration
-│   ├── package.json             # CDK dependencies
-│   └── tsconfig.json            # TypeScript configuration
+│   ├── requirements.txt         # Python dependencies
+│   └── setup.py                 # Python project setup
 │
 ├── services/                    # Service References (NOT source code)
 │   ├── api/
@@ -252,7 +252,8 @@ example-aws-iac/
 # Technology Stack
 
 ## Infrastructure (CDK)
-- **AWS Cloud Development Kit** - Infrastructure as Code framework
+- **AWS Cloud Development Kit (Python)** - Infrastructure as Code framework
+- **Python 3.9+** - CDK language binding
 - **AWS CodePipeline** - CI/CD orchestration
 - **AWS CodeBuild** - Build infrastructure
 - **AWS CodeConnections** - GitHub integration
@@ -284,18 +285,18 @@ example-aws-iac/
 
 ## Managing Secrets and Parameters
 
-| Option          | Pros                                          | Use Case                               |
-|-----------------|-----------------------------------------------|----------------------------------------|
-| **Secrets Manager** |                                               |                                        |
-|                 | Native credential rotation                    |                                        |
-|                 | Designed for sensitive data                   |                                        |
-|                 | Full audit trail                              | API keys, database passwords, tokens   |
-|                 | Encryption at rest and in transit             | Injected via CDK into ECS task env     |
-| **Parameter Store** |                                               |                                        |
-|                 | Simple key-value store                        |                                        |
-|                 | Hierarchical organization (/prod/api/timeout) | Configuration values, feature flags    |
-|                 | Free tier available                           | Injected via CDK into ECS task env     |
-|                 | Good for non-sensitive config                 |                                        |
+| Option              | Pros                                          | Use Case                             |
+|---------------------|-----------------------------------------------|--------------------------------------|
+| **Secrets Manager** |                                               |                                      |
+|                     | Native credential rotation                    |                                      |
+|                     | Designed for sensitive data                   |                                      |
+|                     | Full audit trail                              | API keys, database passwords, tokens |
+|                     | Encryption at rest and in transit             | Injected via CDK into ECS task env   |
+| **Parameter Store** |                                               |                                      |
+|                     | Simple key-value store                        |                                      |
+|                     | Hierarchical organization (/prod/api/timeout) | Configuration values, feature flags  |
+|                     | Free tier available                           | Injected via CDK into ECS task env   |
+|                     | Good for non-sensitive config                 |                                      |
 
 Note: Values are injected into container environment at task startup via CDK.
 

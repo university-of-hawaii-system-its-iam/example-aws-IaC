@@ -3,13 +3,13 @@
 ## System Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         ECS Task Container                          │
-├─────────────────────────────────────────────────────────────────────┤
-│  Application (Spring Boot JAR)                                       │
-│           ↓                                                           │
-│  Writes to → /var/log/application/api/application.log               │
-│                           ↓                                           │
+┌────────────────────────────────────────────────────────────────────┐
+│                         ECS Task Container                         │
+├────────────────────────────────────────────────────────────────────┤
+│  Application (Spring Boot JAR)                                     │
+│           ↓                                                        │
+│  Writes to → /var/log/application/api/application.log              │
+│                           ↓                                        │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  TIER 1: Container-Level Log Management                      │  │
 │  │  • Logrotate daemon (checks every 6 hours)                   │  │
@@ -17,11 +17,11 @@
 │  │  • Moves to /logs/Archive after rotation                     │  │
 │  │  • Deletes logs older than 30 days                           │  │
 │  └──────────────────────────────────────────────────────────────┘  │
-│                           ↓                                           │
-│  EFS Volume Mount → /var/log/application/ & /logs/Archive/          │
-│                           ↓                                           │
-│  Container STDOUT/STDERR                                            │
-└─────────────────────────────────────────────────────────────────────┘
+│                           ↓                                        │
+│  EFS Volume Mount → /var/log/application/ & /logs/Archive/         │
+│                           ↓                                        │
+│                Container STDOUT/STDERR                             │
+└────────────────────────────────────────────────────────────────────┘
          ↓                                    ↓
     ┌─────────────────┐          ┌─────────────────────────┐
     │  EFS /logs/     │          │  CloudWatch Log         │
@@ -72,7 +72,7 @@ uh-groupings-ui             ├─ Streams
 └─ GitHub Actions
                             EventBridge
 AWS CDK Stack               └─ Scheduled rule (2 AM UTC)
-├─ log-archival-stack.ts
+├─ log_archival_stack.py
 ├─ S3 bucket config     ─→   S3 Bucket ←─────────────┐
 ├─ Lambda function          ├─ cloudwatch-logs/      │
 ├─ CloudWatch groups        ├─ {service}/{date}      │
@@ -86,12 +86,12 @@ AWS CDK Stack               └─ Scheduled rule (2 AM UTC)
 ## Log Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Application Output                                     │
+┌───────────────────────────────────────────────────────┐
+│  Application Output                                   │
 │  ├─ application.log (current, 0-100MB)                │
-│  ├─ STDOUT/STDERR (container logs)                     │
-│  └─ Structured logging via Spring Boot                 │
-└─────────────────────────────────────────────────────────┘
+│  ├─ STDOUT/STDERR (container logs)                    │
+│  └─ Structured logging via Spring Boot                │
+└───────────────────────────────────────────────────────┘
          │                                │
          ├─ Logrotate Check (every 6h)    │
          │        │                       │
@@ -104,10 +104,10 @@ AWS CDK Stack               └─ Scheduled rule (2 AM UTC)
          │   │ application.log.gz  │      │
          │   │ → /logs/Archive/    │      │
          │   └─────────────────────┘      │
-         │                                 │
+         │                                │
          ├─ Fresh log file created        ├─ Streams to CloudWatch
          │  application.log (new)         │
-         │                                 ↓
+         │                                ↓
          ↓                          ┌────────────────────┐
     EFS Storage                     │ CloudWatch Logs    │
     ├─ /var/log/application/        │ Log Groups:        │
@@ -119,7 +119,7 @@ AWS CDK Stack               └─ Scheduled rule (2 AM UTC)
     └─ /logs/Archive/               │ • 7-day retention  │
        ├─ app-20260324.1.log.gz     │ • Queryable        │
        ├─ app-20260323.1.log.gz     └────────────────────┘
-       └─ ... (up to 30 days)              │
+       └─ ... (up to 30 days)             │
                                           │ Lambda Export
                                           │ (daily @ 2 AM)
                                           ↓
@@ -138,12 +138,12 @@ Current Date: March 24, 2026
 
 TIER 1: EFS Local Archive (30 days)
 ┌──────────────────────────────────────────────────────┐
-│ Today    │ 7 days   │ 23 days  │ Deleted at day 30  │
-│ Mar 24   │ Mar 18   │ Mar 02   │ Before Feb 23      │
-│          │          │          │                    │
-│ 🟢 ACTIVE│ 🟡 HOT   │ 🟡 WARM  │                    │
-│ Fresh    │ Compressed
-│ Expanding│ Searchable│ Compressed    │ Deleted       │
+│ Today    │ 7 days    │ 23 days   │ Deleted at day 30 │
+│ Mar 24   │ Mar 18    │ Mar 02    │ Before Feb 23     │
+│          │           │           │                   │
+│ ACTIVE   │ HOT       │ WARM      │                   │
+│ Fresh    │ Compressed│           │                   │
+│ Expanding│ Searchable│ Compressed│ Deleted           │
 └──────────────────────────────────────────────────────┘
 
 TIER 2: CloudWatch Logs (7 days)
@@ -151,23 +151,23 @@ TIER 2: CloudWatch Logs (7 days)
 │ Today    │ ← 7 days retention → │ Deleted after 7d   │
 │ Mar 24   │ Mar 17 - Mar 24      │ Before Mar 17      │
 │          │                      │                    │
-│ 🟢 ACTIVE│ 🟡 HOT & QUERYABLE   │                    │
+│ ACTIVE   │ HOT & QUERYABLE      │                    │
 │ Streaming│ Insights/Alarms/     │ Exported to S3     │
 │ Real-time│ Dashboards           │ before deletion    │
 └──────────────────────────────────────────────────────┘
 
 TIER 3: S3 Archive (7 years with transitions)
-┌────────────────────────────────────────────────────────┐
-│ 0-90d   │ 90-180d  │ 180-2555d │ After 2555d (7y)   │
-│ Mar-Jun │ Jun-Dec  │ Dec-2032  │ > March 2033       │
-│         │          │           │                    │
-│ 🟢 STD  │ 🟡 GLACIER│ 🟠 DEEP  │ ❌ DELETED         │
-│ $0.023  │ $0.004   │ $0.001   │ (compliance end)   │
-│ /GB/mo  │ /GB/mo   │ /GB/mo   │                    │
-│         │          │           │                    │
-│ INSTANT │ 3-5 hrs  │ 12 hrs    │                    │
-│ retrieval│ retrieval│ retrieval │                    │
-└────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│ 0-90d   │ 90-180d   │ 180-2555d │ After 2555d (7y)  │
+│ Mar-Jun │ Jun-Dec   │ Dec-2032  │ > March 2033      │
+│         │           │           │                   │
+│ STD     │ GLACIER   │ DEEP      │ DELETED           │
+│ $0.023  │ $0.004    │ $0.001    │ (compliance end)  │
+│ /GB/mo  │ /GB/mo    │ /GB/mo    │                   │
+│         │           │           │                   │
+│ INSTANT │ 3-5 hrs   │ 12 hrs    │                   │
+│ retrieval│ retrieval│ retrieval │                   │
+└─────────────────────────────────────────────────────┘
 ```
 
 ## Container-to-Cloud Data Flow
@@ -222,30 +222,30 @@ TIER 3: S3 Archive (7 years with transitions)
 ## Cost Breakdown (100MB/day per service)
 
 ```
-┌─────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────┐
 │  Monthly Cost Estimation (2 services, 200MB/day)   │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  TIER 1: EFS Storage                                │
+├────────────────────────────────────────────────────┤
+│                                                    │
+│  TIER 1: EFS Storage                               │
 │  ├─ 6GB × $0.30/GB = $1.80/month                   │
 │  └─ Includes: Storage + burst throughput           │
-│                                                     │
-│  TIER 2: CloudWatch Logs                            │
+│                                                    │
+│  TIER 2: CloudWatch Logs                           │
 │  ├─ 6GB × $0.50/GB = $3.00/month                   │
 │  ├─ 7-day retention (no extra charge)              │
 │  └─ Queries/alarms included                        │
-│                                                     │
-│  TIER 3: S3 Storage & Exports                       │
+│                                                    │
+│  TIER 3: S3 Storage & Exports                      │
 │  ├─ 6GB/month exports                              │
-│  ├─ Standard (0-90d): 3GB × $0.023 = $0.07        │
-│  ├─ Glacier (90-180d): 3GB × $0.004 = $0.01       │
+│  ├─ Standard (0-90d): 3GB × $0.023 = $0.07         │
+│  ├─ Glacier (90-180d): 3GB × $0.004 = $0.01        │
 │  ├─ Lambda invocations: ~$0.05/month               │
 │  └─ Total S3: ~$0.20/month                         │
-│                                                     │
-├─────────────────────────────────────────────────────┤
-│  TOTAL: ~$5.00/month per service pair               │
-│  (Scales linearly with log volume)                  │
-└─────────────────────────────────────────────────────┘
+│                                                    │
+├────────────────────────────────────────────────────┤
+│  TOTAL: ~$5.00/month per service pair              │
+│  (Scales linearly with log volume)                 │
+└────────────────────────────────────────────────────┘
 
 Example Scaling:
   • 50MB/day: $2.50/month

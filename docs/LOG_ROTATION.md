@@ -6,11 +6,11 @@ Log rotation with archival to `/logs/Archive` is implemented in this AWS Fargate
 
 ### **Three-Tier System**
 
-| Tier | Technology | Retention | Purpose |
-|------|-----------|-----------|---------|
-| **1** | EFS (Local) | 30 days | Immediate troubleshooting |
-| **2** | CloudWatch Logs | 7 days | Real-time monitoring |
-| **3** | S3 Archive | 7 years | Compliance & long-term storage |
+| Tier | Technology      | Retention  | Purpose                        |
+|------|-----------------|------------|--------------------------------|
+| **1** | EFS (Local)     | 30 days    | Immediate troubleshooting      |
+| **2** | CloudWatch Logs | 7 days     | Real-time monitoring           |
+| **3** | S3 Archive      | 7 years    | Compliance & long-term storage |
 
 ### **Tier 1: Container-Level Log Rotation (Logrotate + Spring Boot)**
 - **Where:** Inside each ECS container
@@ -322,103 +322,93 @@ Or create a `logback-spring.xml` configuration file:
 
 ### Implementation
 
-Update ECS Task Definition in `infra/lib/app-stack.ts`:
+Update ECS Task Definition in `infra/stacks/app_stack.py`:
 
-```typescript
-// Configure CloudWatch logging
-const apiLogDriver = ecs.LogDriver.awsLogs({
-  logGroup: new logs.LogGroup(this, 'api-log-group', {
-    logGroupName: '/ecs/uh-groupings/api',
-    retention: logs.RetentionDays.SEVEN_DAYS,
-    removalPolicy: cdk.RemovalPolicy.RETAIN,
-  }),
-  streamPrefix: 'api-task',
-});
+```python
+# Configure CloudWatch logging
+api_log_driver = ecs.LogDriver.aws_logs(
+    log_group=logs.LogGroup(self, "api-log-group",
+        log_group_name="/ecs/uh-groupings/api",
+        retention=logs.RetentionDays.SEVEN_DAYS,
+        removal_policy=cdk.RemovalPolicy.RETAIN,
+    ),
+    stream_prefix="api-task",
+)
 
-const uiLogDriver = ecs.LogDriver.awsLogs({
-  logGroup: new logs.LogGroup(this, 'ui-log-group', {
-    logGroupName: '/ecs/uh-groupings/ui',
-    retention: logs.RetentionDays.SEVEN_DAYS,
-    removalPolicy: cdk.RemovalPolicy.RETAIN,
-  }),
-  streamPrefix: 'ui-task',
-});
+ui_log_driver = ecs.LogDriver.aws_logs(
+    log_group=logs.LogGroup(self, "ui-log-group",
+        log_group_name="/ecs/uh-groupings/ui",
+        retention=logs.RetentionDays.SEVEN_DAYS,
+        removal_policy=cdk.RemovalPolicy.RETAIN,
+    ),
+    stream_prefix="ui-task",
+)
 ```
 
 #### Export to S3 via Lambda
 
 Create a Lambda function to periodically export CloudWatch logs to S3:
 
-**`infra/lib/log-archival-stack.ts`:**
-```typescript
-import * as cdk from 'aws-cdk-lib';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
-import * as iam from 'aws-cdk-lib/aws-iam';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-import { Construct } from 'constructs';
+**`infra/stacks/log_archival_stack.py`:**
+```python
+import aws_cdk as cdk
+from aws_cdk import (
+    aws_events as events,
+    aws_events_targets as targets,
+    aws_iam as iam,
+    aws_lambda as lambda_,
+    aws_s3 as s3,
+)
+from constructs import Construct
 
-export class LogArchivalStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
 
-    // Create S3 bucket for log archives
-    const logArchiveBucket = new s3.Bucket(this, 'log-archive-bucket', {
-      bucketName: `uh-groupings-logs-archive-${cdk.Stack.of(this).account}`,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      versioned: true,
-      lifecycleRules: [
-        {
-          transitions: [
-            {
-              storageClass: s3.StorageClass.GLACIER,
-              transitionAfter: cdk.Duration.days(90),
-            },
-          ],
-          expiration: cdk.Duration.days(2555), // 7 years
-        },
-      ],
-    });
+class LogArchivalStack(cdk.Stack):
+    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+        super().__init__(scope, construct_id, **kwargs)
 
-    // Lambda function for exporting logs
-    const exportLogsFunction = new lambda.Function(this, 'export-logs-function', {
-      runtime: lambda.Runtime.PYTHON_3_11,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/export-logs'),
-      environment: {
-        LOG_BUCKET: logArchiveBucket.bucketName,
-      },
-      timeout: cdk.Duration.minutes(5),
-    });
+        # Create S3 bucket for log archives
+        log_archive_bucket = s3.Bucket(self, "log-archive-bucket",
+            bucket_name=f"uh-groupings-logs-archive-{cdk.Stack.of(self).account}",
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            versioned=True,
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    transitions=[
+                        s3.Transition(
+                            storage_class=s3.StorageClass.GLACIER,
+                            transition_after=cdk.Duration.days(90),
+                        ),
+                    ],
+                    expiration=cdk.Duration.days(2555),  # 7 years
+                ),
+            ],
+        )
 
-    // Grant permissions
-    exportLogsFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'logs:CreateExportTask',
-          'logs:DescribeExportTasks',
-          'logs:StartQuery',
-        ],
-        resources: ['*'],
-      })
-    );
+        # Lambda function for exporting logs
+        export_logs_function = lambda_.Function(self, "export-logs-function",
+            runtime=lambda_.Runtime.PYTHON_3_11,
+            handler="index.handler",
+            code=lambda_.Code.from_inline(EXPORT_HANDLER_CODE),
+            environment={"LOG_BUCKET": log_archive_bucket.bucket_name},
+            timeout=cdk.Duration.minutes(5),
+        )
 
-    logArchiveBucket.grantWrite(exportLogsFunction);
+        # Grant permissions
+        export_logs_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["logs:CreateExportTask", "logs:DescribeExportTasks"],
+                resources=["*"],
+            )
+        )
+        log_archive_bucket.grant_write(export_logs_function)
 
-    // Schedule daily exports
-    const rule = new events.Rule(this, 'export-logs-schedule', {
-      schedule: events.Schedule.cron({
-        hour: '2',      // 2 AM UTC
-        minute: '0',
-      }),
-    });
-
-    rule.addTarget(new targets.LambdaTarget(exportLogsFunction));
-  }
-}
+        # Schedule daily exports
+        rule = events.Rule(self, "export-logs-schedule",
+            schedule=events.Schedule.cron(hour="2", minute="0"),
+        )
+        rule.add_target(targets.LambdaFunction(export_logs_function))
 ```
 
 **`lambda/export-logs/index.py`:**
@@ -472,24 +462,24 @@ def handler(event, context):
 
 ### Implementation
 
-Add a sidecar container to ECS task definition in `infra/lib/app-stack.ts`:
+Add a sidecar container to ECS task definition in `infra/stacks/app_stack.py`:
 
-```typescript
-// Create a simple logrotate sidecar image
-const logRotateSidecar = ecs.ContainerImage.fromRegistry(
-  '123456789.dkr.ecr.us-east-1.amazonaws.com/logrotate-sidecar:latest'
-);
+```python
+# Create a simple logrotate sidecar image
+log_rotate_sidecar = ecs.ContainerImage.from_registry(
+    "123456789.dkr.ecr.us-east-1.amazonaws.com/logrotate-sidecar:latest"
+)
 
-taskDef.addContainer('log-rotator', {
-  image: logRotateSidecar,
-  cpu: 64,
-  memoryReservationMiB: 128,
-  essential: false,
-  logging: ecs.LogDriver.awsLogs({
-    logGroup: logGroup,
-    streamPrefix: 'log-rotator',
-  }),
-});
+task_def.add_container("log-rotator",
+    image=log_rotate_sidecar,
+    cpu=64,
+    memory_reservation_mib=128,
+    essential=False,
+    logging=ecs.LogDriver.aws_logs(
+        log_group=log_group,
+        stream_prefix="log-rotator",
+    ),
+)
 ```
 
 **Sidecar Dockerfile** (`services/log-rotator/Dockerfile`):
@@ -518,36 +508,34 @@ CMD ["sh", "-c", "while true; do logrotate -f /etc/logrotate.d/*; sleep 21600; d
 
 Add DataSync configuration to infrastructure:
 
-```typescript
-import * as datasync from 'aws-cdk-lib/aws-datasync';
+```python
+from aws_cdk import aws_datasync as datasync
 
-// Create DataSync task from EFS to S3
-const efsLocation = new datasync.EfsLocation(this, 'efs-source', {
-  ec2Config: new datasync.Ec2Config({
-    subnetId: vpc.privateSubnets[0].subnetId,
-    securityGroupIds: [efsSecurityGroup.securityGroupId],
-  }),
-  fileSystemId: efsFileSystem.fileSystemId,
-  subdirectory: '/var/log/application',
-});
+# Create DataSync task from EFS to S3
+efs_location = datasync.CfnLocationEFS(self, "efs-source",
+    ec2_config=datasync.CfnLocationEFS.Ec2ConfigProperty(
+        subnet_arn=vpc.private_subnets[0].subnet_arn,
+        security_group_arns=[efs_security_group.security_group_arn],
+    ),
+    efs_filesystem_arn=efs_file_system.file_system_arn,
+    subdirectory="/var/log/application",
+)
 
-const s3Location = new datasync.S3Location(this, 's3-destination', {
-  bucket: logArchiveBucket,
-  prefix: 'archive',
-});
+s3_location = datasync.CfnLocationS3(self, "s3-destination",
+    s3_bucket_arn=log_archive_bucket.bucket_arn,
+    s3_config=datasync.CfnLocationS3.S3ConfigProperty(
+        bucket_access_role_arn=datasync_role.role_arn,
+    ),
+    subdirectory="/archive",
+)
 
-new datasync.Task(this, 'efs-to-s3-task', {
-  sourceLocation: efsLocation,
-  destinationLocation: s3Location,
-  schedule: {
-    expression: 'cron(0 2 * * ? *)', // 2 AM UTC daily
-  },
-  options: {
-    atime: datasync.Atime.BEST_EFFORT,
-    mtime: datasync.Mtime.PRESERVE,
-    deleteMode: datasync.DeleteMode.REMOVE,  // Delete after copy
-  },
-});
+datasync.CfnTask(self, "efs-to-s3-task",
+    source_location_arn=efs_location.attr_location_arn,
+    destination_location_arn=s3_location.attr_location_arn,
+    schedule=datasync.CfnTask.TaskScheduleProperty(
+        schedule_expression="cron(0 2 * * ? *)",  # 2 AM UTC daily
+    ),
+)
 ```
 
 ---
@@ -638,18 +626,18 @@ logging.file.total-size-cap=500MB
 
 ### CloudWatch Alarms for Log Size
 
-```typescript
-const logSizeAlarm = new cloudwatch.Alarm(this, 'log-size-alarm', {
-  metric: new cloudwatch.Metric({
-    namespace: 'AWS/EFS',
-    metricName: 'StorageBytes',
-    statistic: 'Average',
-    period: cdk.Duration.hours(1),
-  }),
-  threshold: 1099511627776, // 1TB
-  evaluationPeriods: 1,
-  alarmDescription: 'Alert when log size exceeds 1TB',
-});
+```python
+log_size_alarm = cloudwatch.Alarm(self, "log-size-alarm",
+    metric=cloudwatch.Metric(
+        namespace="AWS/EFS",
+        metric_name="StorageBytes",
+        statistic="Average",
+        period=cdk.Duration.hours(1),
+    ),
+    threshold=1099511627776,  # 1TB
+    evaluation_periods=1,
+    alarm_description="Alert when log size exceeds 1TB",
+)
 ```
 
 ### Custom Metrics for Rotation Success
@@ -853,43 +841,47 @@ In your `uh-groupings-api` and `uh-groupings-ui` repositories:
 ### **Step 2: Update Infrastructure (Optional)**
 To enable CloudWatch export to S3:
 
-1. Add to `infra/bin/app.ts`:
-   ```typescript
-   import { LogArchivalStack } from '../lib/log-archival-stack';
+1. Add to `infra/app.py`:
+   ```python
+   from stacks.log_archival_stack import LogArchivalStack
    
-   const logArchivalStack = new LogArchivalStack(app, 'uh-groupings-log-archival');
+   LogArchivalStack(app, "LogArchivalStack", env=env)
    ```
 
 2. Deploy:
    ```bash
    cd infra
-   npm install
+   pip install -r requirements.txt
    cdk deploy
    ```
 
 ### **Step 3: Configure ECS Task Definition**
 Update to mount EFS volume:
 
-```typescript
-const efsVolume = taskDef.addVolume({
-  name: 'logs-volume',
-  efsVolumeConfiguration: {
-    fileSystemId: efsFileSystem.fileSystemId,
-    transitEncryption: 'ENABLED',
-  },
-});
+```python
+task_def.add_volume(
+    name="logs-volume",
+    efs_volume_configuration=ecs.EfsVolumeConfiguration(
+        file_system_id=efs_file_system.file_system_id,
+        transit_encryption="ENABLED",
+    ),
+)
 
-container.addMountPoints({
-  sourceVolume: 'logs-volume',
-  containerPath: '/var/log/application',
-  readOnly: false,
-});
+container.add_mount_points(
+    ecs.MountPoint(
+        source_volume="logs-volume",
+        container_path="/var/log/application",
+        read_only=False,
+    ),
+)
 
-container.addMountPoints({
-  sourceVolume: 'logs-volume',
-  containerPath: '/logs',
-  readOnly: false,
-});
+container.add_mount_points(
+    ecs.MountPoint(
+        source_volume="logs-volume",
+        container_path="/logs",
+        read_only=False,
+    ),
+)
 ```
 
 ### **Step 4: Update Service Configuration**
@@ -927,13 +919,13 @@ aws s3 ls s3://uh-groupings-logs-archive-{account-id}/cloudwatch-logs/
 
 ### **Common Issues & Solutions**
 
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| Logs not rotating | Pattern mismatch | Check: `ls /var/log/application/api/*.log` |
-| Permission denied on archive | Wrong permissions | Run: `chmod 755 /logs/Archive` |
-| High disk usage | Rotation not running | Check: `logrotate -d /etc/logrotate.d/api` |
-| CloudWatch logs missing | ECS task not configured | Verify task definition has log driver |
-| S3 export failing | Lambda permissions | Check: `aws lambda get-function --function-name export-logs-function` |
+| Issue                        | Cause                   | Solution                                                              |
+|------------------------------|-------------------------|-----------------------------------------------------------------------|
+| Logs not rotating            | Pattern mismatch        | Check: `ls /var/log/application/api/*.log`                            |
+| Permission denied on archive | Wrong permissions       | Run: `chmod 755 /logs/Archive`                                        |
+| High disk usage              | Rotation not running    | Check: `logrotate -d /etc/logrotate.d/api`                            |
+| CloudWatch logs missing      | ECS task not configured | Verify task definition has log driver                                 |
+| S3 export failing            | Lambda permissions      | Check: `aws lambda get-function --function-name export-logs-function` |
 
 ### **CloudWatch Queries**
 

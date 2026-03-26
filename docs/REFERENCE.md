@@ -158,11 +158,11 @@ Teams work in **separate repositories**.
 
 ## URLs to Remember
 
-| Component | URL |
-|-----------|-----|
+| Component      | URL                                                                             |
+|----------------|---------------------------------------------------------------------------------|
 | API Repository | https://github.com/uhawaii-system-its-ti-iam/uh-groupings-api/tree/release-prod |
-| UI Repository | https://github.com/uhawaii-system-its-ti-iam/uh-groupings-ui/tree/release-prod |
-| Infrastructure | (this repository) |
+| UI Repository  | https://github.com/uhawaii-system-its-ti-iam/uh-groupings-ui/tree/release-prod  |
+| Infrastructure | (this repository)                                                               |
 
 ---
 
@@ -218,5 +218,3 @@ Teams work in **separate repositories**.
 → See service READMEs for build instructions
 
 ---
-
-✅ **You now understand the complete architecture!** ✅

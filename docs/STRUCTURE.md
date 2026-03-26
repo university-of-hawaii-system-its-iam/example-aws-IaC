@@ -8,19 +8,20 @@ example-aws-iac/                    # THIS REPOSITORY
 │   ├── deploy-dev.yml              # Deploy to development
 │   └── deploy-prod.yml             # Deploy to production
 │
-├── infra/                           # AWS CDK Infrastructure
-│   ├── bin/
-│   │   └── app.ts                  # Entry point
-│   ├── lib/
-│   │   ├── network-stack.ts         # VPC, subnets, security
-│   │   ├── app-stack.ts             # ECS, services, ALB
+├── infra/                           # AWS CDK Infrastructure (Python)
+│   ├── app.py                      # CDK app entry point
+│   ├── stacks/
+│   │   ├── __init__.py
+│   │   ├── network_stack.py         # VPC, subnets, security
+│   │   ├── app_stack.py             # ECS, services, ALB
 │   │   │   └── References:
 │   │   │       - uh-groupings-api:release-prod (from ECR)
 │   │   │       - uh-groupings-ui:release-prod (from ECR)
-│   │   └── data-stack.ts            # RDS, cache, secrets
+│   │   ├── data_stack.py            # RDS, cache, secrets
+│   │   └── log_archival_stack.py    # S3, CloudWatch, Lambda for log archival
 │   ├── cdk.json
-│   ├── package.json
-│   └── tsconfig.json
+│   ├── requirements.txt
+│   └── setup.py
 │
 ├── services/                        # REFERENCE DOCUMENTATION ONLY
 │   ├── api/

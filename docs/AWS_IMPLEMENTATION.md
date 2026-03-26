@@ -57,6 +57,27 @@ This document provides a comprehensive implementation plan for deploying the log
 - ✅ Production-ready with monitoring and alarms
 - ✅ Zero application code changes required
 
+### Prerequisites
+
+Before starting, the following must be in place. Items marked with *(TODO)* are
+defined in the CDK stacks but not yet implemented:
+
+- AWS Account with CDK bootstrap completed (`cdk bootstrap`)
+- AWS CLI v2 installed and configured
+- Python 3.9+ and pip installed
+- CDK CLI installed (`npm install -g aws-cdk`)
+- Docker installed locally for testing
+- **VPC with public/private subnets** — defined in `NetworkStack` *(TODO)*
+- **ECS Cluster** — defined in `AppStack` *(TODO)*
+- **EFS File System** with mount targets in private subnets — to be added to `DataStack` *(TODO)*
+- **ECR repositories** for `uh-groupings-api` and `uh-groupings-ui`
+- GitHub repository access for CI/CD workflows
+
+> **Note:** The CDK stacks in `infra/stacks/` contain TODO placeholders for VPC,
+> ECS, and EFS resources. These must be implemented before the log rotation
+> infrastructure can be deployed. This plan assumes those are completed first
+> or are being done in parallel.
+
 ---
 
 ## Detailed Implementation Plan
@@ -92,11 +113,11 @@ This document provides a comprehensive implementation plan for deploying the log
 
 **Tasks:**
 - [ ] Audit current ECS cluster configuration
-- [ ] Verify EFS filesystem exists and is accessible
+- [ ] Verify EFS filesystem exists and is accessible from ECS tasks
 - [ ] Check ECS task definition log driver configuration
 - [ ] Review IAM roles and permissions
 - [ ] Verify S3 bucket naming conventions
-- [ ] Test network connectivity to all AWS services
+- [ ] Test network connectivity (ECS → EFS, ECS → CloudWatch, Lambda → S3)
 
 **Audit Checklist:**
 ```bash
@@ -112,9 +133,13 @@ aws ecs describe-clusters \
 # Check IAM roles
 aws iam get-role --role-name ecsTaskExecutionRole
 
-# Check existing logs
+# Check existing CloudWatch log groups
 aws logs describe-log-groups \
   --query 'logGroups[?contains(logGroupName, `uh-groupings`)]'
+
+# Check existing S3 buckets
+aws s3api list-buckets \
+  --query 'Buckets[?contains(Name, `uh-groupings`)]'
 ```
 
 **Deliverables:**
@@ -132,309 +157,190 @@ aws logs describe-log-groups \
 
 ### Phase 2: Infrastructure Setup (Week 2)
 
-#### 2.1 Create S3 Bucket for Archive
-**Goal:** Set up S3 bucket with lifecycle policies for long-term log storage
+#### 2.1 Deploy the LogArchivalStack
+**Goal:** Deploy the S3 bucket, CloudWatch log groups, Lambda export function,
+and EventBridge schedule — all defined in the existing
+`infra/stacks/log_archival_stack.py`.
 
-**Tools:** AWS Console or AWS CLI
+**Reference file:** `infra/stacks/log_archival_stack.py`
 
-**Steps:**
+This stack creates:
+- S3 bucket (`uh-groupings-logs-archive-{account}`) with lifecycle policies
+  (Glacier at 90 days, Deep Archive at 180 days, expire at 7 years)
+- CloudWatch Log Groups (`/ecs/uh-groupings/api` and `/ecs/uh-groupings/ui`)
+  with 7-day retention
+- Lambda function (Python 3.11, inline code) for daily CloudWatch → S3 export
+- EventBridge rule triggering the Lambda at 2 AM UTC daily
 
-1. **Create S3 bucket:**
-   ```bash
-   aws s3api create-bucket \
-     --bucket uh-groupings-logs-archive-$(aws sts get-caller-identity --query Account --output text) \
-     --region us-east-1
-   ```
+**Step 1: Register the stack in `app.py`**
 
-2. **Enable versioning:**
-   ```bash
-   aws s3api put-bucket-versioning \
-     --bucket uh-groupings-logs-archive-ACCOUNT-ID \
-     --versioning-configuration Status=Enabled
-   ```
+The stack is already defined in `infra/stacks/log_archival_stack.py` but is not
+yet registered in `infra/app.py`. Add it:
 
-3. **Block public access:**
-   ```bash
-   aws s3api put-public-access-block \
-     --bucket uh-groupings-logs-archive-ACCOUNT-ID \
-     --public-access-block-configuration \
-     "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-   ```
-
-4. **Enable encryption:**
-   ```bash
-   aws s3api put-bucket-encryption \
-     --bucket uh-groupings-logs-archive-ACCOUNT-ID \
-     --server-side-encryption-configuration '{
-       "Rules": [{
-         "ApplyServerSideEncryptionByDefault": {
-           "SSEAlgorithm": "AES256"
-         }
-       }]
-     }'
-   ```
-
-5. **Set lifecycle policy:**
-   ```bash
-   aws s3api put-bucket-lifecycle-configuration \
-     --bucket uh-groupings-logs-archive-ACCOUNT-ID \
-     --lifecycle-configuration file://lifecycle-policy.json
-   ```
-
-   **`lifecycle-policy.json`:**
-   ```json
-   {
-     "Rules": [
-       {
-         "Id": "LogArchiveLifecycle",
-         "Status": "Enabled",
-         "Filter": {"Prefix": "cloudwatch-logs/"},
-         "Transitions": [
-           {
-             "Days": 90,
-             "StorageClass": "GLACIER"
-           },
-           {
-             "Days": 180,
-             "StorageClass": "DEEP_ARCHIVE"
-           }
-         ],
-         "Expiration": {
-           "Days": 2555
-         }
-       }
-     ]
-   }
-   ```
-
-**Deliverables:**
-- [ ] S3 bucket created with unique name
-- [ ] Versioning enabled
-- [ ] Public access blocked
-- [ ] Encryption configured
-- [ ] Lifecycle policy applied
-- [ ] Bucket ARN documented
-
-**Success Criteria:**
-- Bucket is created and accessible
-- Lifecycle policy is active
-- Encryption is enabled
-- Public access is blocked
-
----
-
-#### 2.2 Create CloudWatch Log Groups
-**Goal:** Set up centralized log aggregation via CloudWatch
-
-**Tools:** AWS CDK (recommended) or AWS CLI
-
-**Using AWS CDK (Recommended):**
-
-Add to `infra/lib/log-rotation-stack.ts`:
-```typescript
-import * as cdk from 'aws-cdk-lib';
-import * as logs from 'aws-cdk-lib/aws-logs';
-
-export class LogRotationStack extends cdk.Stack {
-  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
-
-    // Create log groups for each service
-    const apiLogGroup = new logs.LogGroup(this, 'api-log-group', {
-      logGroupName: '/ecs/uh-groupings/api',
-      retention: logs.RetentionDays.SEVEN_DAYS,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
-
-    const uiLogGroup = new logs.LogGroup(this, 'ui-log-group', {
-      logGroupName: '/ecs/uh-groupings/ui',
-      retention: logs.RetentionDays.SEVEN_DAYS,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
-
-    // Export ARNs for reference
-    new cdk.CfnOutput(this, 'ApiLogGroupName', {
-      value: apiLogGroup.logGroupName,
-      exportName: 'api-log-group-name',
-    });
-
-    new cdk.CfnOutput(this, 'UiLogGroupName', {
-      value: uiLogGroup.logGroupName,
-      exportName: 'ui-log-group-name',
-    });
-  }
-}
-```
-
-Add to `infra/bin/app.ts`:
-```typescript
-import { LogRotationStack } from '../lib/log-rotation-stack';
-
-const app = new cdk.App();
-// ... existing stacks ...
-new LogRotationStack(app, 'uh-groupings-log-rotation');
-```
-
-Deploy:
-```bash
-cd infra
-npm install
-cdk deploy LogRotationStack
-```
-
-**Using AWS CLI:**
-```bash
-aws logs create-log-group --log-group-name /ecs/uh-groupings/api
-aws logs put-retention-policy --log-group-name /ecs/uh-groupings/api --retention-in-days 7
-
-aws logs create-log-group --log-group-name /ecs/uh-groupings/ui
-aws logs put-retention-policy --log-group-name /ecs/uh-groupings/ui --retention-in-days 7
-```
-
-**Deliverables:**
-- [ ] CloudWatch log group for API service created
-- [ ] CloudWatch log group for UI service created
-- [ ] Retention policy set to 7 days
-- [ ] Log group ARNs documented
-
-**Success Criteria:**
-- Log groups exist in CloudWatch console
-- Retention is set correctly
-- Log groups are ready to receive logs
-
----
-
-#### 2.3 Set Up CloudWatch-to-S3 Export
-**Goal:** Create Lambda function and EventBridge rule for daily log exports
-
-**Tools:** AWS CDK or AWS Console
-
-**Using AWS CDK:**
-
-Add to `infra/lib/log-archival-stack.ts`:
-```typescript
-import * as cdk from 'aws-cdk-lib';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
-import * as iam from 'aws-cdk-lib/aws-iam';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-
-export class LogArchivalStack extends cdk.Stack {
-  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
-
-    // Reference existing S3 bucket
-    const logBucket = s3.Bucket.fromBucketName(
-      this,
-      'log-archive-bucket',
-      `uh-groupings-logs-archive-${cdk.Stack.of(this).account}`
-    );
-
-    // Create Lambda function for exporting logs
-    const exportFunction = new lambda.Function(this, 'export-logs', {
-      runtime: lambda.Runtime.PYTHON_3_11,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/export-logs'),
-      environment: {
-        LOG_BUCKET: logBucket.bucketName,
-      },
-      timeout: cdk.Duration.minutes(5),
-      memorySize: 512,
-    });
-
-    // Add permissions
-    exportFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'logs:CreateExportTask',
-          'logs:DescribeExportTasks',
-        ],
-        resources: ['*'],
-      })
-    );
-
-    logBucket.grantWrite(exportFunction);
-
-    // Schedule daily execution
-    const rule = new events.Rule(this, 'export-schedule', {
-      schedule: events.Schedule.cron({
-        hour: '2',
-        minute: '0',
-      }),
-    });
-
-    rule.addTarget(new targets.LambdaTarget(exportFunction));
-  }
-}
-```
-
-Create Lambda code at `lambda/export-logs/index.py`:
 ```python
-import boto3
-import json
-import os
-from datetime import datetime, timedelta
+# infra/app.py
+from stacks.log_archival_stack import LogArchivalStack
 
-logs_client = boto3.client('logs')
-s3_bucket = os.environ['LOG_BUCKET']
-
-def handler(event, context):
-    log_groups = [
-        '/ecs/uh-groupings/api',
-        '/ecs/uh-groupings/ui',
-    ]
-    
-    # Calculate time range (yesterday)
-    end_time = int(datetime.utcnow().timestamp() * 1000)
-    start_time = int((datetime.utcnow() - timedelta(days=1)).timestamp() * 1000)
-    
-    results = []
-    
-    for log_group in log_groups:
-        try:
-            response = logs_client.create_export_task(
-                logGroupName=log_group,
-                fromTime=start_time,
-                to=end_time,
-                destination=s3_bucket,
-                destinationPrefix=f"cloudwatch-logs{log_group}/{datetime.utcnow().strftime('%Y/%m/%d')}"
-            )
-            results.append({
-                'logGroup': log_group,
-                'taskId': response['taskId'],
-                'status': 'success'
-            })
-        except Exception as e:
-            results.append({
-                'logGroup': log_group,
-                'status': 'error',
-                'error': str(e)
-            })
-    
-    return {
-        'statusCode': 200,
-        'body': json.dumps(results)
-    }
+# ...existing stacks...
+LogArchivalStack(app, "LogArchivalStack", env=env)
 ```
 
-Deploy:
+**Step 2: Deploy**
+
 ```bash
 cd infra
-cdk deploy LogArchivalStack
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cdk synth LogArchivalStack   # Validate the template
+cdk deploy LogArchivalStack  # Deploy to AWS
+```
+
+**Step 3: Verify**
+
+```bash
+# Verify S3 bucket
+aws s3api head-bucket \
+  --bucket uh-groupings-logs-archive-$(aws sts get-caller-identity --query Account --output text)
+
+# Verify CloudWatch log groups
+aws logs describe-log-groups \
+  --log-group-name-prefix /ecs/uh-groupings/ \
+  --query 'logGroups[].{Name:logGroupName, Retention:retentionInDays}'
+
+# Verify Lambda function
+aws lambda get-function \
+  --function-name $(aws lambda list-functions \
+    --query 'Functions[?contains(FunctionName, `export-logs`)].FunctionName' \
+    --output text)
+
+# Verify EventBridge rule
+aws events list-rules \
+  --query 'Rules[?contains(Name, `export-logs`)]'
 ```
 
 **Deliverables:**
-- [ ] Lambda function created and deployed
-- [ ] EventBridge rule scheduled for 2 AM UTC daily
-- [ ] Lambda has CloudWatch Logs and S3 write permissions
-- [ ] Lambda function ARN documented
+- [ ] `LogArchivalStack` registered in `app.py`
+- [ ] Stack deployed successfully via `cdk deploy`
+- [ ] S3 bucket created with versioning, encryption, public access blocked
+- [ ] Lifecycle policy active (Glacier 90d → Deep Archive 180d → Expire 2555d)
+- [ ] CloudWatch log groups created with 7-day retention
+- [ ] Lambda function deployed and invokable
+- [ ] EventBridge rule scheduled at 2 AM UTC daily
 
 **Success Criteria:**
-- Lambda function can be invoked manually without errors
-- EventBridge rule is active
-- S3 bucket receives test exports
+- `cdk deploy` completes without errors
+- All resources visible in AWS Console
+- Manual Lambda invocation succeeds
+
+---
+
+#### 2.2 Add S3 Bucket Policy for CloudWatch Logs Export
+
+**Goal:** The CloudWatch Logs `CreateExportTask` API requires the destination
+S3 bucket to have a resource policy that grants the CloudWatch Logs service
+principal write access. Without this, all export tasks will fail with an
+`InvalidParameterException`.
+
+> **This is a critical step that is easy to miss.**
+
+**Apply via AWS CLI:**
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+BUCKET_NAME="uh-groupings-logs-archive-${ACCOUNT_ID}"
+REGION=$(aws configure get region)
+
+aws s3api put-bucket-policy \
+  --bucket "${BUCKET_NAME}" \
+  --policy "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
+      {
+        \"Effect\": \"Allow\",
+        \"Principal\": {
+          \"Service\": \"logs.${REGION}.amazonaws.com\"
+        },
+        \"Action\": \"s3:GetBucketAcl\",
+        \"Resource\": \"arn:aws:s3:::${BUCKET_NAME}\",
+        \"Condition\": {
+          \"StringEquals\": {
+            \"aws:SourceAccount\": \"${ACCOUNT_ID}\"
+          }
+        }
+      },
+      {
+        \"Effect\": \"Allow\",
+        \"Principal\": {
+          \"Service\": \"logs.${REGION}.amazonaws.com\"
+        },
+        \"Action\": \"s3:PutObject\",
+        \"Resource\": \"arn:aws:s3:::${BUCKET_NAME}/*\",
+        \"Condition\": {
+          \"StringEquals\": {
+            \"s3:x-amz-acl\": \"bucket-owner-full-control\",
+            \"aws:SourceAccount\": \"${ACCOUNT_ID}\"
+          }
+        }
+      }
+    ]
+  }"
+```
+
+**Alternatively, add to CDK** (recommended for infrastructure-as-code):
+
+Add to `log_archival_stack.py` after the bucket is created:
+
+```python
+self.log_archive_bucket.add_to_resource_policy(
+    iam.PolicyStatement(
+        effect=iam.Effect.ALLOW,
+        principals=[iam.ServicePrincipal(f"logs.{region}.amazonaws.com")],
+        actions=["s3:GetBucketAcl"],
+        resources=[self.log_archive_bucket.bucket_arn],
+        conditions={
+            "StringEquals": {"aws:SourceAccount": account_id},
+        },
+    )
+)
+
+self.log_archive_bucket.add_to_resource_policy(
+    iam.PolicyStatement(
+        effect=iam.Effect.ALLOW,
+        principals=[iam.ServicePrincipal(f"logs.{region}.amazonaws.com")],
+        actions=["s3:PutObject"],
+        resources=[f"{self.log_archive_bucket.bucket_arn}/*"],
+        conditions={
+            "StringEquals": {
+                "s3:x-amz-acl": "bucket-owner-full-control",
+                "aws:SourceAccount": account_id,
+            },
+        },
+    )
+)
+```
+
+**Verify:**
+
+```bash
+# Test export manually
+aws lambda invoke \
+  --function-name $(aws lambda list-functions \
+    --query 'Functions[?contains(FunctionName, `export-logs`)].FunctionName' \
+    --output text) \
+  /tmp/export-response.json
+
+cat /tmp/export-response.json
+# Should show status: "PENDING" for each log group, not errors
+```
+
+**Deliverables:**
+- [ ] S3 bucket policy applied
+- [ ] Manual Lambda invocation produces successful export tasks
+
+**Success Criteria:**
+- `CreateExportTask` does not fail with `InvalidParameterException`
+- Export task status transitions from `PENDING` to `COMPLETED`
 
 ---
 
@@ -445,47 +351,67 @@ cdk deploy LogArchivalStack
 
 **Location:** `uh-groupings-api` repository
 
+**Reference files** (from this repository):
+- `services/api/Dockerfile`
+- `services/api/entrypoint.sh`
+- `services/api/logrotate-api.conf`
+- `services/api/logback-spring.xml`
+
 **Steps:**
 
-1. **Copy configuration files from example repo:**
+1. **Copy configuration files into your service repository build context:**
    ```bash
-   cp examples/services/api/entrypoint.sh ./services/api/
-   cp examples/services/api/logrotate-api.conf ./services/api/
-   cp examples/services/api/logback-spring.xml ./src/main/resources/
-   chmod +x ./services/api/entrypoint.sh
+   # From the example-aws-IaC repo, copy into your uh-groupings-api repo root:
+   cp services/api/entrypoint.sh       <uh-groupings-api-repo>/entrypoint.sh
+   cp services/api/logrotate-api.conf  <uh-groupings-api-repo>/logrotate-api.conf
+   cp services/api/logback-spring.xml  <uh-groupings-api-repo>/src/main/resources/logback-spring.xml
+   chmod +x <uh-groupings-api-repo>/entrypoint.sh
    ```
 
-2. **Update Dockerfile:**
+2. **Update the Dockerfile runtime stage** to match `services/api/Dockerfile`:
    ```dockerfile
    # ...existing build stage...
-   
+
+   # Stage 2: Runtime Stage
    FROM eclipse-temurin:17-jre-alpine
-   
+
    WORKDIR /app
-   
+
    # Install logrotate
    RUN apk add --no-cache logrotate
-   
-   # Copy JAR
+
+   # Copy the built JAR from builder stage
    COPY --from=builder /app/target/*.jar app.jar
-   
-   # Create log directories
+
+   # Create log and archive directories with proper permissions
    RUN mkdir -p /var/log/application/api /logs/Archive && \
        chmod 755 /var/log/application/api /logs/Archive
-   
-   # Copy configuration
-   COPY services/api/logrotate-api.conf /etc/logrotate.d/api
-   COPY services/api/entrypoint.sh /app/entrypoint.sh
+
+   # Copy logrotate configuration
+   COPY logrotate-api.conf /etc/logrotate.d/api
+
+   # Copy logback configuration (optional, for Spring Boot log rotation)
+   COPY logback-spring.xml /app/logback-spring.xml
+
+   # Copy entrypoint script for log rotation and application startup
+   COPY entrypoint.sh /app/entrypoint.sh
    RUN chmod +x /app/entrypoint.sh
-   
+
    EXPOSE 8080
-   
+
+   HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+     CMD wget --quiet --tries=1 --spider http://localhost:8080/actuator/health || exit 1
+
    ENTRYPOINT ["/app/entrypoint.sh"]
    ```
 
-3. **Update application.properties:**
+   > **Note:** The `COPY` sources (`logrotate-api.conf`, `entrypoint.sh`,
+   > `logback-spring.xml`) must be relative to the Docker build context.
+   > Place these files in the repository root alongside the Dockerfile, or
+   > adjust paths accordingly.
+
+3. **Add to `application.properties`** (or `application.yml`):
    ```properties
-   # Logging configuration
    logging.config=classpath:logback-spring.xml
    logging.file.name=/var/log/application/api/application.log
    logging.level.root=INFO
@@ -496,39 +422,41 @@ cdk deploy LogArchivalStack
    ```bash
    docker build -t uh-groupings-api:test .
    docker run --rm \
-     -v /tmp/logs:/var/log/application \
-     -v /tmp/archive:/logs/Archive \
+     -v /tmp/test-logs:/var/log/application \
+     -v /tmp/test-archive:/logs/Archive \
      uh-groupings-api:test
-   
-   # In another terminal, generate some logs
-   # Wait 6+ hours or modify entrypoint.sh sleep time for testing
+
+   # In another terminal, verify directories are created:
+   ls -la /tmp/test-logs/api/
+   ls -la /tmp/test-archive/
    ```
+
+   > **Tip:** For faster testing, temporarily change `sleep 21600` in
+   > `entrypoint.sh` to `sleep 60` to trigger rotation after 1 minute.
 
 5. **Commit and push:**
    ```bash
-   git add services/api/entrypoint.sh services/api/logrotate-api.conf
+   git add entrypoint.sh logrotate-api.conf Dockerfile
    git add src/main/resources/logback-spring.xml
-   git add Dockerfile
    git add src/main/resources/application.properties
-   git commit -m "feat: add log rotation configuration"
-   git tag v1.2.0-with-log-rotation
-   git push origin main --tags
+   git commit -m "feat: add log rotation with archival to /logs/Archive"
+   git push origin main
    ```
 
 **Deliverables:**
-- [ ] entrypoint.sh copied and executable
-- [ ] logrotate-api.conf copied
-- [ ] logback-spring.xml added to project
-- [ ] Dockerfile updated with logrotate installation
-- [ ] application.properties updated
-- [ ] Local Docker test passed
-- [ ] Changes committed and tagged
+- [ ] `entrypoint.sh` — copied and executable
+- [ ] `logrotate-api.conf` — copied to repo root
+- [ ] `logback-spring.xml` — added to `src/main/resources/`
+- [ ] `Dockerfile` — updated with logrotate
+- [ ] `application.properties` — logging config added
+- [ ] Local Docker build and run successful
+- [ ] Changes committed and pushed
 
 **Success Criteria:**
-- Docker build completes successfully
-- Container starts without errors
-- Log files are created in correct locations
-- No permission errors in logs
+- `docker build` completes without errors
+- Container starts, creates log file at `/var/log/application/api/application.log`
+- `logrotate -d -f /etc/logrotate.d/api` (dry run) reports no errors inside container
+- No permission errors in container logs
 
 ---
 
@@ -537,37 +465,47 @@ cdk deploy LogArchivalStack
 
 **Location:** `uh-groupings-ui` repository
 
-**Steps:** (Same as API service, but with UI-specific paths)
+**Reference files** (from this repository):
+- `services/ui/Dockerfile`
+- `services/ui/entrypoint.sh`
+- `services/ui/logrotate-ui.conf`
+- `services/ui/logback-spring.xml`
+
+**Steps:** Same as Phase 3.1, but with UI-specific paths:
 
 1. **Copy configuration files:**
    ```bash
-   cp examples/services/ui/entrypoint.sh ./services/ui/
-   cp examples/services/ui/logrotate-ui.conf ./services/ui/
-   cp examples/services/ui/logback-spring.xml ./src/main/resources/
-   chmod +x ./services/ui/entrypoint.sh
+   cp services/ui/entrypoint.sh       <uh-groupings-ui-repo>/entrypoint.sh
+   cp services/ui/logrotate-ui.conf   <uh-groupings-ui-repo>/logrotate-ui.conf
+   cp services/ui/logback-spring.xml  <uh-groupings-ui-repo>/src/main/resources/logback-spring.xml
+   chmod +x <uh-groupings-ui-repo>/entrypoint.sh
    ```
 
-2. **Update Dockerfile:**
+2. **Update Dockerfile runtime stage** to match `services/ui/Dockerfile`:
    ```dockerfile
    # ...existing build stage...
-   
+
+   # Stage 2: Runtime Stage
    FROM eclipse-temurin:17-jre-alpine
-   
+
    WORKDIR /app
-   
    RUN apk add --no-cache logrotate
    COPY --from=builder /app/target/*.jar app.jar
    RUN mkdir -p /var/log/application/ui /logs/Archive && \
        chmod 755 /var/log/application/ui /logs/Archive
-   COPY services/ui/logrotate-ui.conf /etc/logrotate.d/ui
-   COPY services/ui/entrypoint.sh /app/entrypoint.sh
+   COPY logrotate-ui.conf /etc/logrotate.d/ui
+   COPY logback-spring.xml /app/logback-spring.xml
+   COPY entrypoint.sh /app/entrypoint.sh
    RUN chmod +x /app/entrypoint.sh
-   
+
    EXPOSE 3000
+   HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+     CMD wget --quiet --tries=1 --spider http://localhost:3000/actuator/health || exit 1
+
    ENTRYPOINT ["/app/entrypoint.sh"]
    ```
 
-3. **Update application.properties:**
+3. **Update `application.properties`:**
    ```properties
    logging.config=classpath:logback-spring.xml
    logging.file.name=/var/log/application/ui/application.log
@@ -575,105 +513,108 @@ cdk deploy LogArchivalStack
    logging.level.com.uh.groupings=DEBUG
    ```
 
-4. **Test and commit:**
-   ```bash
-   docker build -t uh-groupings-ui:test .
-   # ... test ...
-   git add services/ui/entrypoint.sh services/ui/logrotate-ui.conf
-   git add src/main/resources/logback-spring.xml
-   git add Dockerfile
-   git add src/main/resources/application.properties
-   git commit -m "feat: add log rotation configuration"
-   git tag v1.2.0-with-log-rotation
-   git push origin main --tags
-   ```
+4. **Test and commit** (same process as API).
 
 **Deliverables:**
 - [ ] UI container updated with log rotation
-- [ ] Docker test passed
-- [ ] Changes committed and tagged
+- [ ] Local Docker build and run successful
+- [ ] Changes committed and pushed
 
 ---
 
 ### Phase 4: ECS Configuration Updates (Week 3)
 
-#### 4.1 Update Task Definition
-**Goal:** Configure ECS task to mount EFS and use CloudWatch logging
+#### 4.1 Update Task Definitions
+**Goal:** Configure ECS tasks to mount EFS for persistent logs and use
+CloudWatch for log streaming.
 
-**Tools:** AWS CDK, AWS Console, or AWS CLI
+**Tools:** AWS CDK (recommended) or AWS Console
+
+> **Prerequisite:** The EFS file system must be created first. This should be
+> added to `DataStack` or `NetworkStack` (both are currently TODO placeholders).
+> The EFS file system needs mount targets in each private subnet used by ECS
+> tasks, and the security group must allow NFS (TCP port 2049) from the ECS
+> task security group.
 
 **Using AWS CDK (Recommended):**
 
-Update `infra/lib/app-stack.ts`:
-```typescript
-// ...existing imports...
-import * as efs from 'aws-cdk-lib/aws-efs';
+Add to `infra/stacks/app_stack.py`:
+```python
+from aws_cdk import (
+    aws_ecs as ecs,
+    aws_efs as efs,
+    aws_logs as logs,
+)
 
-// In your task definition creation:
+# ...existing code...
 
-// Mount EFS volume
-const logsVolume = taskDefinition.addVolume({
-  name: 'logs-volume',
-  efsVolumeConfiguration: {
-    fileSystemId: efsFileSystem.fileSystemId,
-    transitEncryption: 'ENABLED',
-    authorizationConfig: {
-      accessPointId: efsAccessPoint.accessPointId,
-    },
-  },
-});
+# Reference EFS (created in DataStack or NetworkStack)
+efs_file_system = efs.FileSystem.from_file_system_attributes(
+    self, "LogsEfs",
+    file_system_id="fs-XXXXXXXXX",          # Replace with actual ID
+    security_group=efs_security_group,       # Must allow NFS from ECS SG
+)
 
-// Add mount points for API container
-apiContainer.addMountPoints({
-  sourceVolume: 'logs-volume',
-  containerPath: '/var/log/application',
-  readOnly: false,
-});
+# Mount EFS volume in task definition
+task_definition.add_volume(
+    name="logs-volume",
+    efs_volume_configuration=ecs.EfsVolumeConfiguration(
+        file_system_id=efs_file_system.file_system_id,
+        transit_encryption="ENABLED",
+    ),
+)
 
-apiContainer.addMountPoints({
-  sourceVolume: 'logs-volume',
-  containerPath: '/logs',
-  readOnly: false,
-});
+# Add mount points for API container
+api_container.add_mount_points(
+    ecs.MountPoint(
+        source_volume="logs-volume",
+        container_path="/var/log/application",
+        read_only=False,
+    ),
+    ecs.MountPoint(
+        source_volume="logs-volume",
+        container_path="/logs",
+        read_only=False,
+    ),
+)
 
-// Configure CloudWatch logging for API
-const apiLogGroup = logs.LogGroup.fromLogGroupName(
-  this,
-  'api-logs',
-  '/ecs/uh-groupings/api'
-);
-
-apiContainer.addPortMappings({
-  containerPort: 8080,
-});
-
-// Same for UI container
-// ...
+# Configure CloudWatch logging
+api_log_driver = ecs.LogDriver.aws_logs(
+    log_group=logs.LogGroup.from_log_group_name(
+        self, "api-logs", "/ecs/uh-groupings/api"
+    ),
+    stream_prefix="api-task",
+)
 ```
 
 **Using AWS Console:**
 
-1. Go to ECS Cluster → Services → Service Details
-2. Click "Update" → "Modify"
-3. Under "Logging," configure CloudWatch:
-   - Log Group: `/ecs/uh-groupings/api`
-   - Log Stream Prefix: `api-task`
-4. Under "Storage," add volume mount:
-   - Source: EFS
-   - Container Path: `/var/log/application`
-5. Save and update service
+1. Go to ECS → Task Definitions → Create new revision
+2. Under **Volumes**, add an EFS volume:
+   - Name: `logs-volume`
+   - Source: Select EFS file system
+   - Enable transit encryption
+3. Under each container, add **Mount points**:
+   - Source volume: `logs-volume`
+   - Container path: `/var/log/application` (read/write)
+   - Container path: `/logs` (read/write)
+4. Under **Log configuration**, set:
+   - Log driver: `awslogs`
+   - Log group: `/ecs/uh-groupings/api` (or `/ecs/uh-groupings/ui`)
+   - Stream prefix: `api-task` (or `ui-task`)
+5. Save new revision
 
 **Deliverables:**
-- [ ] Task definition updated with EFS mounts
-- [ ] CloudWatch logging configured
-- [ ] Task definition revision updated
-- [ ] New task definition ARN documented
+- [ ] Task definitions updated with EFS volume mounts
+- [ ] CloudWatch logging configured for both containers
+- [ ] New task definition revision created
+- [ ] Task definition ARNs documented
 
 **Success Criteria:**
 - Task definition validates successfully
-- EFS mount points are correct
-- CloudWatch logging is configured
-- New task definitions work with existing services
+- EFS mount points reference correct file system
+- CloudWatch log driver is configured
+- New revision is available for deployment
 
 ---
 
@@ -684,13 +625,6 @@ apiContainer.addPortMappings({
 
 1. **Update API service:**
    ```bash
-   # Get latest image from ECR
-   API_IMAGE=$(aws ecr describe-images \
-     --repository-name uh-groupings-api \
-     --query 'imageDetails[0].imageUri' \
-     --output text)
-   
-   # Update service
    aws ecs update-service \
      --cluster uh-groupings-cluster \
      --service uh-groupings-api \
@@ -700,11 +634,6 @@ apiContainer.addPortMappings({
 
 2. **Update UI service:**
    ```bash
-   UI_IMAGE=$(aws ecr describe-images \
-     --repository-name uh-groupings-ui \
-     --query 'imageDetails[0].imageUri' \
-     --output text)
-   
    aws ecs update-service \
      --cluster uh-groupings-cluster \
      --service uh-groupings-ui \
@@ -714,26 +643,26 @@ apiContainer.addPortMappings({
 
 3. **Monitor rollout:**
    ```bash
-   # Watch service deployment
-   aws ecs describe-services \
+   # Watch deployment progress (refresh every 10s)
+   watch -n 10 'aws ecs describe-services \
      --cluster uh-groupings-cluster \
      --services uh-groupings-api uh-groupings-ui \
-     --query 'services[].deployments'
+     --query "services[].{Name:serviceName,Running:runningCount,Pending:pendingCount,Deployments:deployments[].{Status:status,Running:runningCount,Desired:desiredCount}}"
    ```
 
 4. **Verify logs are flowing:**
    ```bash
    # Check CloudWatch
    aws logs tail /ecs/uh-groupings/api --follow
-   
-   # In separate terminal, check EFS
+
+   # Connect to a running container to check EFS
    aws ecs execute-command \
      --cluster uh-groupings-cluster \
      --task <TASK-ID> \
      --container uh-groupings-api \
      --interactive \
      --command "/bin/sh"
-   
+
    # Inside container:
    ls -la /var/log/application/api/
    ls -la /logs/Archive/
@@ -741,7 +670,7 @@ apiContainer.addPortMappings({
 
 **Deliverables:**
 - [ ] Services updated with new task definitions
-- [ ] Deployment completed successfully
+- [ ] Deployment completed successfully (PRIMARY deployment is steady-state)
 - [ ] All tasks are in RUNNING state
 - [ ] CloudWatch logs are flowing
 
@@ -760,51 +689,59 @@ apiContainer.addPortMappings({
 
 **Using AWS CDK:**
 
-Add to monitoring stack:
-```typescript
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+Add to `app_stack.py` or a dedicated monitoring stack:
+```python
+from aws_cdk import (
+    aws_cloudwatch as cloudwatch,
+    aws_sns as sns,
+)
 
-// Alarm for high log volume
-new cloudwatch.Alarm(this, 'high-log-volume', {
-  metric: new cloudwatch.Metric({
-    namespace: 'AWS/Logs',
-    metricName: 'IncomingBytes',
-    statistic: 'Sum',
-    period: cdk.Duration.hours(1),
-    dimensions: {
-      LogGroupName: '/ecs/uh-groupings/api',
-    },
-  }),
-  threshold: 1073741824, // 1GB per hour
-  evaluationPeriods: 2,
-  alarmDescription: 'Alert when log volume exceeds 1GB/hour',
-  alarmName: 'uh-groupings-high-log-volume',
-});
+# SNS topic for alarm notifications
+alarm_topic = sns.Topic(self, "log-alarm-topic",
+    topic_name="uh-groupings-log-alarms",
+)
 
-// Alarm for missing logs
-new cloudwatch.Alarm(this, 'no-logs', {
-  metric: new cloudwatch.Metric({
-    namespace: 'AWS/Logs',
-    metricName: 'IncomingLogEvents',
-    statistic: 'Sum',
-    period: cdk.Duration.minutes(30),
-    dimensions: {
-      LogGroupName: '/ecs/uh-groupings/api',
-    },
-  }),
-  threshold: 0,
-  evaluationPeriods: 2,
-  treatMissingData: cloudwatch.TreatMissingData.BREACHING,
-  alarmDescription: 'Alert when no logs received for 30 minutes',
-  alarmName: 'uh-groupings-no-logs',
-});
+# Alarm for high log volume
+high_volume_alarm = cloudwatch.Alarm(self, "high-log-volume",
+    metric=cloudwatch.Metric(
+        namespace="AWS/Logs",
+        metric_name="IncomingBytes",
+        statistic="Sum",
+        period=cdk.Duration.hours(1),
+        dimensions_map={
+            "LogGroupName": "/ecs/uh-groupings/api",
+        },
+    ),
+    threshold=1073741824,  # 1GB per hour
+    evaluation_periods=2,
+    alarm_description="Alert when log volume exceeds 1GB/hour",
+    alarm_name="uh-groupings-high-log-volume",
+)
+
+# Alarm for missing logs
+no_logs_alarm = cloudwatch.Alarm(self, "no-logs",
+    metric=cloudwatch.Metric(
+        namespace="AWS/Logs",
+        metric_name="IncomingLogEvents",
+        statistic="Sum",
+        period=cdk.Duration.minutes(30),
+        dimensions_map={
+            "LogGroupName": "/ecs/uh-groupings/api",
+        },
+    ),
+    threshold=0,
+    evaluation_periods=2,
+    treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+    alarm_description="Alert when no logs received for 30 minutes",
+    alarm_name="uh-groupings-no-logs",
+)
 ```
 
 **Deliverables:**
 - [ ] High log volume alarm created
 - [ ] Missing logs alarm created
 - [ ] Alarms configured with proper thresholds
-- [ ] SNS topics for notifications
+- [ ] SNS topic created for notifications
 
 **Success Criteria:**
 - Alarms appear in CloudWatch console
@@ -818,41 +755,63 @@ new cloudwatch.Alarm(this, 'no-logs', {
 
 **Using AWS CDK:**
 
-```typescript
-const dashboard = new cloudwatch.Dashboard(this, 'log-rotation-dashboard', {
-  dashboardName: 'uh-groupings-log-rotation',
-});
+```python
+dashboard = cloudwatch.Dashboard(self, "log-rotation-dashboard",
+    dashboard_name="uh-groupings-log-rotation",
+)
 
-dashboard.addWidgets(
-  new cloudwatch.GraphWidget({
-    title: 'Incoming Log Events',
-    left: [
-      new cloudwatch.Metric({
-        namespace: 'AWS/Logs',
-        metricName: 'IncomingLogEvents',
-        statistic: 'Sum',
-        period: cdk.Duration.minutes(5),
-        dimensions: { LogGroupName: '/ecs/uh-groupings/api' },
-      }),
-    ],
-  }),
-  new cloudwatch.GraphWidget({
-    title: 'Incoming Bytes',
-    left: [
-      new cloudwatch.Metric({
-        namespace: 'AWS/Logs',
-        metricName: 'IncomingBytes',
-        statistic: 'Sum',
-        period: cdk.Duration.minutes(5),
-      }),
-    ],
-  }),
-);
+dashboard.add_widgets(
+    cloudwatch.GraphWidget(
+        title="Incoming Log Events (API)",
+        left=[
+            cloudwatch.Metric(
+                namespace="AWS/Logs",
+                metric_name="IncomingLogEvents",
+                statistic="Sum",
+                period=cdk.Duration.minutes(5),
+                dimensions_map={"LogGroupName": "/ecs/uh-groupings/api"},
+            ),
+        ],
+    ),
+    cloudwatch.GraphWidget(
+        title="Incoming Log Events (UI)",
+        left=[
+            cloudwatch.Metric(
+                namespace="AWS/Logs",
+                metric_name="IncomingLogEvents",
+                statistic="Sum",
+                period=cdk.Duration.minutes(5),
+                dimensions_map={"LogGroupName": "/ecs/uh-groupings/ui"},
+            ),
+        ],
+    ),
+    cloudwatch.GraphWidget(
+        title="Incoming Bytes (All Services)",
+        left=[
+            cloudwatch.Metric(
+                namespace="AWS/Logs",
+                metric_name="IncomingBytes",
+                statistic="Sum",
+                period=cdk.Duration.minutes(5),
+                dimensions_map={"LogGroupName": "/ecs/uh-groupings/api"},
+                label="API",
+            ),
+            cloudwatch.Metric(
+                namespace="AWS/Logs",
+                metric_name="IncomingBytes",
+                statistic="Sum",
+                period=cdk.Duration.minutes(5),
+                dimensions_map={"LogGroupName": "/ecs/uh-groupings/ui"},
+                label="UI",
+            ),
+        ],
+    ),
+)
 ```
 
 **Deliverables:**
 - [ ] CloudWatch dashboard created
-- [ ] Key metrics visualized
+- [ ] Key metrics visualized for both services
 - [ ] Dashboard accessible from CloudWatch console
 
 ---
@@ -866,55 +825,76 @@ dashboard.addWidgets(
 
 1. **Local Rotation (Tier 1):**
    ```bash
-   # Inside running container
-   # Force rotation to test
-   logrotate -f /etc/logrotate.d/api
-   
-   # Verify files
+   # Connect to a running container
+   aws ecs execute-command \
+     --cluster uh-groupings-cluster \
+     --task <TASK-ID> \
+     --container uh-groupings-api \
+     --interactive \
+     --command "/bin/sh"
+
+   # Inside container — force rotation and verify
+   logrotate -d -f /etc/logrotate.d/api   # Dry run (check for errors)
+   logrotate -f /etc/logrotate.d/api      # Actual rotation
+
+   # Verify
    ls -la /var/log/application/api/
    ls -la /logs/Archive/
-   
-   # Check sizes
-   du -sh /logs/Archive/
    ```
 
 2. **CloudWatch Streaming (Tier 2):**
    ```bash
-   # Check logs appear in CloudWatch
+   # Tail recent logs
    aws logs tail /ecs/uh-groupings/api --follow
-   
-   # Run query
-   aws logs start-query \
+
+   # Run a CloudWatch Insights query
+   QUERY_ID=$(aws logs start-query \
      --log-group-name /ecs/uh-groupings/api \
-     --start-time $(date -d '1 hour ago' +%s) \
-     --end-time $(date +%s) \
-     --query-string 'fields @timestamp, @message | limit 100'
+     --start-time $(python3 -c "import time; print(int(time.time()) - 3600)") \
+     --end-time $(python3 -c "import time; print(int(time.time()))") \
+     --query-string 'fields @timestamp, @message | sort @timestamp desc | limit 20' \
+     --query 'queryId' --output text)
+
+   # Wait a few seconds, then get results
+   sleep 5
+   aws logs get-query-results --query-id "$QUERY_ID"
    ```
+
+   > **Note:** The `date -d` flag used in earlier versions of this document is
+   > GNU-specific and does not work on macOS. The `python3 -c` approach above
+   > is portable across Linux and macOS.
 
 3. **S3 Export (Tier 3):**
    ```bash
-   # Check Lambda function
-   aws lambda get-function \
-     --function-name export-logs-function
-   
-   # Manually invoke
+   # Manually invoke the Lambda to test export
+   FUNCTION_NAME=$(aws lambda list-functions \
+     --query 'Functions[?contains(FunctionName, `export-logs`)].FunctionName' \
+     --output text)
+
    aws lambda invoke \
-     --function-name export-logs-function \
-     /tmp/response.json
-   
-   # Check S3
-   aws s3 ls s3://uh-groupings-logs-archive-ACCOUNT/cloudwatch-logs/
+     --function-name "$FUNCTION_NAME" \
+     /tmp/export-response.json
+
+   cat /tmp/export-response.json
+
+   # Check export task status
+   aws logs describe-export-tasks \
+     --query 'exportTasks[?status.code==`COMPLETED`]'
+
+   # Check S3 for exported logs
+   ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+   aws s3 ls "s3://uh-groupings-logs-archive-${ACCOUNT_ID}/cloudwatch-logs/" --recursive | head -20
    ```
 
 **Checklist:**
-- [ ] Logs are written to `/var/log/application/{service}/`
-- [ ] Rotation occurs at expected intervals
-- [ ] Compressed files appear in `/logs/Archive/`
-- [ ] Files are deleted after maxage threshold
-- [ ] CloudWatch receives logs within 60 seconds
-- [ ] CloudWatch Insights queries work
-- [ ] S3 exports occur daily at 2 AM UTC
-- [ ] S3 lifecycle transitions work after 90 days
+- [ ] Logs are written to `/var/log/application/{service}/application.log`
+- [ ] `logrotate -d -f` dry run reports no errors
+- [ ] Rotation creates compressed files in `/logs/Archive/`
+- [ ] `maxage 30` setting will delete files older than 30 days
+- [ ] CloudWatch receives logs within 60 seconds of application output
+- [ ] CloudWatch Insights queries return results
+- [ ] Lambda export produces `COMPLETED` export tasks
+- [ ] S3 bucket contains exported log files under `cloudwatch-logs/` prefix
 
 ---
 
@@ -935,7 +915,7 @@ dashboard.addWidgets(
 
 3. **Concurrent Access:**
    - Multiple services writing logs simultaneously
-   - Verify no log loss
+   - Verify no log loss or EFS contention
    - Monitor resource utilization
 
 **Deliverables:**
@@ -954,10 +934,10 @@ dashboard.addWidgets(
 - Sustained high volume for 24 hours
 
 **Monitoring During Tests:**
-- EFS utilization
-- CloudWatch API throttling
+- EFS utilization and throughput
+- CloudWatch API throttling (check for `ThrottlingException`)
 - S3 upload performance
-- Lambda execution time
+- Lambda execution time and errors
 
 **Deliverables:**
 - [ ] Load test plan executed
@@ -976,33 +956,35 @@ Pre-Deployment Verification Checklist:
 
 Infrastructure Setup:
   [ ] S3 bucket created with lifecycle policies
-  [ ] CloudWatch log groups created
-  [ ] Lambda function deployed and tested
-  [ ] EventBridge rule scheduled
+  [ ] S3 bucket policy allows CloudWatch Logs export (Phase 2.2)
+  [ ] CloudWatch log groups created with 7-day retention
+  [ ] Lambda function deployed and manually tested
+  [ ] EventBridge rule scheduled for 2 AM UTC
   [ ] IAM roles and policies configured
 
 Container Updates:
   [ ] API service image built and pushed to ECR
   [ ] UI service image built and pushed to ECR
-  [ ] Images tested in staging environment
-  [ ] Images are tagged with version
+  [ ] Images tested in staging/test environment
+  [ ] Images tagged with version
 
 ECS Configuration:
+  [ ] EFS file system created with mount targets
   [ ] Task definitions updated with EFS mounts
-  [ ] CloudWatch logging configured
+  [ ] CloudWatch logging configured in task definitions
   [ ] Task definitions validated in staging
 
 Monitoring:
   [ ] CloudWatch alarms created and tested
   [ ] Dashboard created and accessible
-  [ ] SNS topics configured
-  [ ] On-call rotation informed
+  [ ] SNS topics configured for notifications
+  [ ] On-call rotation informed of deployment
 
 Documentation:
-  [ ] Runbooks updated
-  [ ] Team trained on new monitoring
+  [ ] Runbooks updated with new monitoring procedures
+  [ ] Team trained on CloudWatch dashboard
   [ ] Escalation procedures documented
-  [ ] Rollback procedures documented
+  [ ] Rollback procedures documented and tested
 
 Approvals:
   [ ] Security team approval obtained
@@ -1018,21 +1000,26 @@ Approvals:
 
 **Timeline:** Plan for 2-hour maintenance window
 
-1. **Backup (0:00)**
+1. **Backup current state (T+0:00)**
    ```bash
-   # Create EFS snapshot
-   aws efs create-backup --file-system-id fs-XXXXXX
+   # Create EFS backup via AWS Backup
+   aws backup start-backup-job \
+     --backup-vault-name Default \
+     --resource-arn arn:aws:elasticfilesystem:<REGION>:<ACCOUNT>:file-system/fs-XXXXXXXX \
+     --iam-role-arn arn:aws:iam::<ACCOUNT>:role/aws-service-role/backup.amazonaws.com/AWSBackupDefaultServiceRole
    ```
 
-2. **Update Services (0:10)**
+   > **Note:** There is no `aws efs create-backup` command. EFS backups are
+   > managed through the AWS Backup service.
+
+2. **Update Services (T+0:10)**
    ```bash
-   # Update both services
    aws ecs update-service \
      --cluster uh-groupings-cluster \
      --service uh-groupings-api \
      --task-definition uh-groupings-api:LATEST \
      --force-new-deployment
-   
+
    aws ecs update-service \
      --cluster uh-groupings-cluster \
      --service uh-groupings-ui \
@@ -1040,51 +1027,54 @@ Approvals:
      --force-new-deployment
    ```
 
-3. **Monitor Rollout (0:10-1:00)**
+3. **Monitor Rollout (T+0:10 to T+1:00)**
    ```bash
-   # Watch deployment progress
-   watch 'aws ecs describe-services \
+   # Watch deployment progress (refresh every 10s)
+   watch -n 10 'aws ecs describe-services \
      --cluster uh-groupings-cluster \
      --services uh-groupings-api uh-groupings-ui \
-     --query "services[].{Name:serviceName, Running:runningCount, Pending:pendingCount}"'
+     --query "services[].{Name:serviceName,Running:runningCount,Pending:pendingCount,Deployments:deployments[].{Status:status,Running:runningCount,Desired:desiredCount}}"
    ```
 
-4. **Verify Logs (1:00)**
+4. **Verify logs are flowing (T+1:00)**
    ```bash
-   # Check logs are flowing
-   aws logs tail /ecs/uh-groupings/api --follow
-   aws logs tail /ecs/uh-groupings/ui --follow
-   
-   # Check for errors
-   aws logs start-query \
+   # Check logs in CloudWatch
+   aws logs tail /ecs/uh-groupings/api --since 5m
+   aws logs tail /ecs/uh-groupings/ui --since 5m
+
+   # Check for errors in the last 10 minutes
+   QUERY_ID=$(aws logs start-query \
      --log-group-name /ecs/uh-groupings/api \
-     --start-time $(date -d '10 minutes ago' +%s) \
-     --query-string 'fields @message | filter @message like /ERROR/'
+     --start-time $(python3 -c "import time; print(int(time.time()) - 600)") \
+     --end-time $(python3 -c "import time; print(int(time.time()))") \
+     --query-string 'fields @message | filter @message like /ERROR/' \
+     --query 'queryId' --output text)
+   sleep 5
+   aws logs get-query-results --query-id "$QUERY_ID"
    ```
 
-5. **Test Rotation (1:00-1:30)**
+5. **Test Rotation (T+1:00 to T+1:30)**
    ```bash
-   # Force rotation to verify
+   # Connect to a running container
    aws ecs execute-command \
      --cluster uh-groupings-cluster \
      --task <TASK-ID> \
      --container uh-groupings-api \
      --interactive \
      --command "/bin/sh"
-   
+
    # Inside container:
-   logrotate -f /etc/logrotate.d/api
+   logrotate -d -f /etc/logrotate.d/api   # Dry run
+   logrotate -f /etc/logrotate.d/api      # Actual rotation
    ls -la /logs/Archive/
    ```
 
-6. **Final Validation (1:30-2:00)**
-   ```bash
-   # Verify all systems operational
-   # - Application health checks passing
-   # - CloudWatch logs flowing
-   # - No errors in last 30 minutes
-   # - S3 bucket accessible
-   ```
+6. **Final Validation (T+1:30 to T+2:00)**
+   - [ ] Application health checks passing
+   - [ ] CloudWatch logs flowing for both services
+   - [ ] No ERROR-level logs in last 30 minutes
+   - [ ] S3 bucket accessible
+   - [ ] CloudWatch dashboard showing metrics
 
 ---
 
@@ -1092,16 +1082,16 @@ Approvals:
 **Goal:** Verify system is stable in production
 
 **Daily Checks:**
-- [ ] Day 1: All logs flowing, no errors
-- [ ] Day 2: Log rotation executing correctly
-- [ ] Day 3: CloudWatch queries working
-- [ ] Day 7: First automated S3 export completed (at 2 AM UTC)
+- [ ] **Day 1:** All logs flowing, no errors, health checks passing
+- [ ] **Day 2:** First logrotate execution occurred (check `/logs/Archive/`)
+- [ ] **Day 3:** CloudWatch Insights queries working with real data
+- [ ] **Day 7:** First automated S3 export completed (Lambda runs at 2 AM UTC daily)
 
-**Weekly Review:**
-- [ ] Log volume metrics reviewed
-- [ ] Cost analysis conducted
+**Week 1 Review:**
+- [ ] Log volume metrics reviewed against projections
+- [ ] Cost analysis conducted (CloudWatch ingestion, EFS storage)
 - [ ] Alarms reviewed for false positives
-- [ ] Documentation updated with actual metrics
+- [ ] Documentation updated with actual metrics and observations
 
 ---
 
@@ -1115,8 +1105,8 @@ Approvals:
 - Monitoring via CloudWatch dashboard
 - Responding to alarms
 - Querying logs via CloudWatch Insights
-- Checking S3 archive
-- Troubleshooting common issues
+- Checking S3 archive and retrieving Glacier objects
+- Troubleshooting common issues (see `LOG_ROTATION.md`)
 
 **Training Materials:**
 - [ ] Runbook created
@@ -1132,9 +1122,9 @@ Approvals:
 **Deliverables:**
 - [ ] Implementation guide (this document)
 - [ ] Operational runbook
-- [ ] Troubleshooting guide
+- [ ] Troubleshooting guide (see `LOG_ROTATION.md`)
 - [ ] Cost tracking spreadsheet
-- [ ] Architecture diagram
+- [ ] Architecture diagram (see `DIAGRAMS.md`)
 - [ ] Contact list for escalation
 
 ---
@@ -1145,10 +1135,10 @@ Approvals:
 **Goal:** Reduce operational costs over time
 
 **Quarterly Reviews:**
-- Analyze actual log volumes
-- Review S3 storage costs
+- Analyze actual log volumes vs. projections
+- Review S3 storage costs across tiers (Standard, Glacier, Deep Archive)
 - Adjust retention policies if needed
-- Consider log sampling for non-critical services
+- Consider log sampling or filtering for high-volume, low-value logs
 
 ---
 
@@ -1157,7 +1147,7 @@ Approvals:
 
 **Monthly Reviews:**
 - Analyze alarm firing patterns
-- Adjust thresholds based on baseline
+- Adjust thresholds based on observed baseline
 - Remove false positive alarms
 - Add new alarms for emerging issues
 
@@ -1168,10 +1158,9 @@ Approvals:
 | Role | Responsibilities |
 |------|------------------|
 | **Project Lead** | Overall coordination, approvals, timeline management |
-| **DevOps Engineer** | Infrastructure setup, task definition updates, deployment |
-| **Application Developer** | Container updates, logback configuration, testing |
+| **DevOps Engineer** | Infrastructure setup, CDK deployment, task definition updates |
+| **Application Developer** | Container updates, logback configuration, service testing |
 | **Security Engineer** | IAM policy review, encryption verification, compliance check |
-| **Database Admin** | EFS monitoring, performance tuning |
 | **Operations Team** | Runbook creation, team training, post-deployment monitoring |
 
 ---
@@ -1180,36 +1169,38 @@ Approvals:
 
 | Risk | Probability | Impact | Mitigation |
 |------|-----------|--------|-----------|
-| **High EFS costs** | Medium | High | Monitor usage, implement cleanup policies |
-| **CloudWatch API throttling** | Low | Medium | Implement exponential backoff in Lambda |
-| **Log loss during migration** | Low | High | Backup existing logs, test thoroughly in staging |
-| **Application startup delay** | Medium | Low | Pre-warm EFS, optimize entrypoint script |
-| **Disk space exhaustion** | Low | High | Monitor proactively, set aggressive retention |
+| **High EFS costs** | Medium | High | Monitor usage, enforce `maxage 30` in logrotate |
+| **CloudWatch API throttling** | Low | Medium | Lambda uses single `CreateExportTask` per group (within limits) |
+| **Log loss during migration** | Low | High | Test in staging first; old containers continue logging until replaced |
+| **Application startup delay** | Medium | Low | `entrypoint.sh` runs logrotate in background, does not block app start |
+| **Disk space exhaustion** | Low | High | Logrotate `maxage 30` + `rotate 7` enforces limits; monitor EFS metrics |
+| **S3 export fails silently** | Medium | Medium | Add CloudWatch alarm on Lambda errors; verify exports weekly |
+| **Missing S3 bucket policy** | High | High | Phase 2.2 explicitly addresses this; test export before production |
 
 ---
 
 ## Success Criteria
 
 ### Functional Requirements
-- [x] Logs rotate daily and are compressed
-- [x] Rotated logs are archived to `/logs/Archive`
-- [x] Logs are streamed to CloudWatch in real-time
-- [x] Logs are exported to S3 daily
-- [x] S3 lifecycle policies transition old logs
-- [x] Compliance retention window is met
+- [ ] Logs rotate daily and are compressed
+- [ ] Rotated logs are archived to `/logs/Archive`
+- [ ] Logs are streamed to CloudWatch in real-time
+- [ ] Logs are exported to S3 daily
+- [ ] S3 lifecycle policies transition old logs to Glacier/Deep Archive
+- [ ] Compliance retention window (7 years) is met
 
 ### Non-Functional Requirements
-- [x] Zero application code changes required
-- [x] Minimal performance impact (<5% CPU/memory overhead)
-- [x] Log queries complete in <30 seconds
-- [x] 99.9% log delivery success rate
-- [x] Cost <$10/month per service pair
+- [ ] Zero application code changes required (only Dockerfile and config)
+- [ ] Minimal performance impact (<5% CPU/memory overhead)
+- [ ] Log queries complete in <30 seconds
+- [ ] 99.9% log delivery success rate
+- [ ] Cost <$10/month per service pair
 
 ### Operational Requirements
-- [x] Operations team can monitor system via dashboard
-- [x] Alarms alert on critical issues
-- [x] Runbook enables fast incident response
-- [x] Team trained on new monitoring
+- [ ] Operations team can monitor system via CloudWatch dashboard
+- [ ] Alarms alert on critical issues within 5 minutes
+- [ ] Runbook enables fast incident response
+- [ ] Team trained on new monitoring procedures
 
 ---
 
@@ -1217,20 +1208,36 @@ Approvals:
 
 If critical issues arise, the system can be rolled back:
 
-1. **Update ECS services to previous task definition**
+1. **Revert ECS services to previous task definition:**
    ```bash
+   # List task definition revisions
+   aws ecs list-task-definitions \
+     --family-prefix uh-groupings-api \
+     --sort DESC --max-items 5
+
+   # Update service to previous revision
    aws ecs update-service \
      --cluster uh-groupings-cluster \
      --service uh-groupings-api \
-     --task-definition uh-groupings-api:PREVIOUS \
+     --task-definition uh-groupings-api:<PREVIOUS_REVISION> \
      --force-new-deployment
    ```
 
-2. **Revert CloudWatch logging** (if needed)
-3. **Restore EFS from snapshot** (if data corruption)
-4. **Keep S3 for audit purposes**
+2. **Revert CloudWatch logging** — only needed if log groups are causing issues;
+   the log groups themselves are harmless and can be retained.
 
-**Rollback Duration:** 30 minutes
+3. **Restore EFS from backup** (if data corruption):
+   ```bash
+   aws backup start-restore-job \
+     --recovery-point-arn <RECOVERY_POINT_ARN> \
+     --iam-role-arn <BACKUP_ROLE_ARN> \
+     --metadata '{"file-system-id":"fs-XXXXXXXX","newFileSystem":"false"}'
+   ```
+
+4. **Keep S3 bucket** — log archives are append-only and should not be deleted
+   even during rollback. They serve as the audit trail.
+
+**Rollback Duration:** ~30 minutes (ECS rolling update)
 
 ---
 
@@ -1239,13 +1246,22 @@ If critical issues arise, the system can be rolled back:
 1. [ ] Obtain stakeholder approval for this plan
 2. [ ] Schedule kickoff meeting
 3. [ ] Assign team members to phases
-4. [ ] Begin Phase 1: Planning & Preparation
-5. [ ] Track progress against timeline
-6. [ ] Conduct post-implementation review
+4. [ ] Complete prerequisite CDK stacks (`network_stack.py`, `data_stack.py`, `app_stack.py`)
+5. [ ] Begin Phase 1: Planning & Preparation
+6. [ ] Track progress against timeline
+7. [ ] Conduct post-implementation review
 
 ---
 
-**Document Owner:** DevOps Team  
-**Last Updated:** March 24, 2026  
-**Version:** 1.0.0
+## Related Documentation
 
+- **Log Rotation Configuration:** `LOG_ROTATION.md` — detailed configuration options, tuning, and troubleshooting
+- **Architecture Diagrams:** `DIAGRAMS.md` — visual architecture, flows, and cost breakdown
+- **AWS Architecture:** `ARCHITECTURE.md` — VPC, ECS, RDS, and overall infrastructure
+- **Project Structure:** `STRUCTURE.md` — repository layout and file organization
+
+---
+
+**Document Owner:** DevOps Team
+**Last Updated:** March 25, 2026
+**Version:** 1.1.0
