@@ -329,7 +329,7 @@ Note: Values are injected into container environment at task startup via CDK.
 
 ## For Infrastructure Team
 1. Monitor for new images in AWS ECR
-2. Update `infra/lib/app-stack.ts` with new image URIs (optional versioning)
+2. Update `infra/lib/app-stack.py` with new image URIs (optional versioning)
 3. Commit changes to `example-aws-iac`
 4. GitHub Actions automatically deploys infrastructure
 5. ECS pulls new images and launches updated services
