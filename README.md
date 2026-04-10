@@ -35,7 +35,7 @@ Key principles:
 
 ## Repository Separation
 
-This project uses a **polyrepo architecture** where code is organized by team and responsibility:
+This project uses a multi-repository architecture where code is organized by team and responsibility:
 
 ```
 GitHub Organization: uhawaii-system-its-ti-iam
